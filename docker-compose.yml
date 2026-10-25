@@ -1,0 +1,60 @@
+services:
+  collector:
+    build: .
+    image: nmealog:latest
+    command: ["python", "-m", "nmealog", "--log-level", "info", "collector"]
+    # Host networking: the LAN relay must bind the host's port and send mDNS on the host's LAN.
+    # It also lets the collector reach the terminal servers without NAT.
+    network_mode: host
+    volumes:
+      - nmealog-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-m", "nmealog", "healthcheck", "collector"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  web:
+    build: .
+    image: nmealog:latest
+    depends_on:
+      - collector
+    environment:
+      # Optional: set these to skip the first-run web-based setup
+      NMEALOG_PASSWORD_HASH: "${NMEALOG_PASSWORD_HASH:-}"
+      NMEALOG_USER: "${NMEALOG_USER:-}"
+      NMEALOG_SECURE_COOKIES: "${NMEALOG_SECURE_COOKIES:-0}"
+      NMEALOG_TRUST_PROXY: "1"  # nginx sets X-Forwarded-* headers
+    volumes:
+      - nmealog-data:/data
+    ports:
+      # Only nginx on this host should reach the web UI.
+      - "127.0.0.1:${NMEALOG_WEB_PORT:-8090}:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-m", "nmealog", "healthcheck", "web"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  # Optional fake GPS/gyro for trying the system out. Start with: docker compose --profile sim up -d
+  simulator:
+    build: .
+    image: nmealog:latest
+    profiles: ["sim"]
+    command: ["python", "-m", "nmealog", "simulate", "--port", "4001", "--rate", "1"]
+    restart: unless-stopped
+    expose:
+      - "4001"
+
+volumes:
+  nmealog-data:

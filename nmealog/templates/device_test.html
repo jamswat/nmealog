@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Test: {{ device.name }}</h1>
+<p class="mono">{{ device.host }}:{{ device.port }}</p>
+{% if error %}<p class="flash error">{{ error }}</p>{% endif %}
+{% if lines %}
+<p class="muted small">First {{ lines|length }} lines received in about 4 seconds. Nothing was stored.</p>
+<pre class="mono">{% for line in lines %}{{ line }}
+{% endfor %}</pre>
+{% endif %}
+<p><a href="{{ url_for('device_edit', device_id=device.id) }}">Back to device</a></p>
+{% endblock %}

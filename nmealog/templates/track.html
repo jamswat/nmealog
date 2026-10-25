@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Track</h1>
+<form method="get">
+  <div class="row">
+    <label for="device">Device</label>
+    <select id="device" name="device">
+      <option value="">All</option>
+      {% for d in devices %}<option value="{{ d.id }}"{% if args.device == d.id|string %} selected{% endif %}>{{ d.name }}</option>{% endfor %}
+    </select>
+  </div>
+  <div class="row"><label for="start">From (local date)</label><input type="date" id="start" name="start" value="{{ args.start or '' }}"></div>
+  <div class="row"><label for="end">To (local date)</label><input type="date" id="end" name="end" value="{{ args.end or '' }}"></div>
+  <div class="row"><button type="submit">Show</button>
+    <a class="button" href="{{ url_for('export') }}?table=positions&amp;{{ export_query }}">Export CSV</a>
+    <a class="button" href="{{ url_for('map_page') }}?{{ export_query }}">Show on map</a></div>
+</form>
+
+<p class="muted small">Times shown in {{ s.display_tz }}. Showing up to 1000 positions, newest first.</p>
+<table>
+  <thead><tr><th>Time</th><th>Device</th><th>Latitude</th><th>Longitude</th><th>Source</th><th class="num">Speed kn</th><th class="num">Course</th><th class="num">Sats</th><th class="num">HDOP</th><th>Map</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td>{{ r.received_at|ts }}</td>
+      <td>{{ r.device_name }}</td>
+      <td class="mono">{{ '%.6f'|format(r.latitude) }}</td>
+      <td class="mono">{{ '%.6f'|format(r.longitude) }}</td>
+      <td>{{ r.source }}{% if r.fix_quality %} <span class="muted">q{{ r.fix_quality }}</span>{% endif %}</td>
+      <td class="num">{{ '%.1f'|format(r.speed_kn) if r.speed_kn is not none else '-' }}</td>
+      <td class="num">{{ '%.1f'|format(r.course_true) if r.course_true is not none else '-' }}</td>
+      <td class="num">{{ r.satellites if r.satellites is not none else '-' }}</td>
+      <td class="num">{{ '%.1f'|format(r.hdop) if r.hdop is not none else '-' }}</td>
+      <td><a href="https://www.openstreetmap.org/?mlat={{ r.latitude }}&amp;mlon={{ r.longitude }}#map=14/{{ r.latitude }}/{{ r.longitude }}">map</a></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="10" class="muted">No positions match.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

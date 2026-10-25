@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Settings</h1>
+<p class="muted small">Stored in the database. The collector applies changes within a few seconds.</p>
+<form method="post" action="{{ url_for('settings_save') }}">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  {% for group, items in groups.items() %}
+    <h2>{{ group }}</h2>
+    {% for setting, value in items %}
+      <div class="row">
+        {% if setting.kind == 'bool' %}
+          <label for="{{ setting.key }}">{{ setting.label }}</label>
+          <input type="checkbox" id="{{ setting.key }}" name="{{ setting.key }}"{% if value %} checked{% endif %}>
+        {% elif setting.kind == 'device' %}
+          <label for="{{ setting.key }}">{{ setting.label }}</label>
+          <select id="{{ setting.key }}" name="{{ setting.key }}">
+            <option value="0">None</option>
+            {% for d in devices %}<option value="{{ d.id }}"{% if (value|string) == (d.id|string) %} selected{% endif %}>{{ d.name }}</option>{% endfor %}
+          </select>
+        {% elif setting.kind == 'int' %}
+          <label for="{{ setting.key }}">{{ setting.label }}</label>
+          <input type="number" id="{{ setting.key }}" name="{{ setting.key }}" value="{{ value }}" min="{{ setting.minimum }}" max="{{ setting.maximum }}" step="1">
+          <span class="muted">{{ setting.unit }}</span>
+        {% else %}
+          <label for="{{ setting.key }}">{{ setting.label }}</label>
+          <input type="text" id="{{ setting.key }}" name="{{ setting.key }}" value="{{ value }}" maxlength="64">
+        {% endif %}
+      </div>
+      {% if setting.help %}<span class="help">{{ setting.help }}</span>{% endif %}
+      {% if errors.get(setting.key) %}<span class="field-error">{{ errors[setting.key] }}</span>{% endif %}
+    {% endfor %}
+  {% endfor %}
+  <div class="row" style="margin-top:1em"><button type="submit">Save settings</button></div>
+</form>
+{% endblock %}

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Setup - nmealog</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<main>
+  <h1>Welcome to nmealog</h1>
+  <p>Create an administrator account to get started.</p>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <p class="flash {{ category }}">{{ message }}</p>
+    {% endfor %}
+  {% endwith %}
+
+  <form method="post" action="{{ url_for('setup') }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="row"><label for="username">Username</label><input type="text" id="username" name="username" value="{{ values.username or '' }}" required maxlength="50" autofocus></div>
+    {% if errors.username %}<span class="field-error">{{ errors.username }}</span>{% endif %}
+    <div class="row"><label for="password">Password</label><input type="password" id="password" name="password" required minlength="8"></div>
+    {% if errors.password %}<span class="field-error">{{ errors.password }}</span>{% endif %}
+    <div class="row"><label for="confirm">Confirm password</label><input type="password" id="confirm" name="confirm" required minlength="8"></div>
+    {% if errors.confirm %}<span class="field-error">{{ errors.confirm }}</span>{% endif %}
+    <div class="row"><button type="submit">Create account</button></div>
+  </form>
+</main>
+</body>
+</html>

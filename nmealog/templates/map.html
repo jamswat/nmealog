@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='leaflet.css') }}">
+{% endblock %}
+{% block content %}
+<h1>Map</h1>
+<form method="get">
+  <div class="row">
+    <label for="device">Device</label>
+    <select id="device" name="device">
+      <option value="">All</option>
+      {% for d in devices %}<option value="{{ d.id }}"{% if args.device == d.id|string %} selected{% endif %}>{{ d.name }}</option>{% endfor %}
+    </select>
+  </div>
+  <div class="row"><label for="start">From (local date)</label><input type="date" id="start" name="start" value="{{ args.start or '' }}"></div>
+  <div class="row"><label for="end">To (local date)</label><input type="date" id="end" name="end" value="{{ args.end or '' }}"></div>
+  <div class="row"><label for="limit">Most recent points</label><input type="number" id="limit" name="limit" value="{{ args.limit or 2000 }}" min="1" max="20000"></div>
+  <div class="row"><button type="submit">Show</button></div>
+</form>
+<p id="map-status" class="muted small">Loading positions...</p>
+<div id="map" role="region" aria-label="Map of recorded positions"></div>
+<p class="small muted">Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors. Tiles load from tile.openstreetmap.org, so the browser needs internet access for the background map.</p>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='leaflet.js') }}"></script>
+<script src="{{ url_for('static', filename='map.js') }}"></script>
+{% endblock %}

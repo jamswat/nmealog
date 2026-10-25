@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Sentences</h1>
+<form method="get">
+  <div class="row">
+    <label for="device">Device</label>
+    <select id="device" name="device">
+      <option value="">All</option>
+      {% for d in devices %}<option value="{{ d.id }}"{% if args.device == d.id|string %} selected{% endif %}>{{ d.name }}</option>{% endfor %}
+    </select>
+  </div>
+  <div class="row">
+    <label for="sentence">Type</label>
+    <select id="sentence" name="sentence">
+      <option value="">All</option>
+      {% for t in types %}<option value="{{ t }}"{% if args.sentence == t %} selected{% endif %}>{{ t }}</option>{% endfor %}
+    </select>
+  </div>
+  <div class="row"><label for="contains">Raw text contains</label><input type="text" id="contains" name="contains" value="{{ args.contains or '' }}"></div>
+  <div class="row"><label for="start">From (local date)</label><input type="date" id="start" name="start" value="{{ args.start or '' }}"></div>
+  <div class="row"><label for="end">To (local date)</label><input type="date" id="end" name="end" value="{{ args.end or '' }}"></div>
+  <div class="row"><button type="submit">Show</button>
+    <a class="button" href="{{ url_for('export') }}?table=sentences&amp;{{ export_query }}">Export CSV</a></div>
+</form>
+
+<p class="muted small">Newest first, up to 300 rows. Times shown in {{ s.display_tz }}.</p>
+<table>
+  <thead><tr><th>Time</th><th>Device</th><th>Sentence</th><th>Checksum</th><th>Fields</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td class="small">{{ r.received_at|ts }}</td>
+      <td class="small">{{ r.device_name }}</td>
+      <td class="mono">{{ r.talker }}{{ r.sentence }}</td>
+      <td class="small">{% if r.checksum_ok == 1 %}ok{% elif r.checksum_ok == 0 %}<span class="error-text">bad</span>{% else %}none{% endif %}</td>
+      <td class="small">
+        <details><summary class="mono">{{ r.fields|fields|truncate(120) }}</summary>
+          <div class="mono">{{ r.raw }}</div>
+        </details>
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="muted">No sentences match. History may be turned off in <a href="{{ url_for('settings_page') }}">Settings</a>.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

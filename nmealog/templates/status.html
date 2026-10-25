@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Status</h1>
+
+{% for w in warnings %}<p class="warning">{{ w }}</p>{% endfor %}
+
+<table>
+  <thead>
+    <tr><th>Device</th><th>State</th><th>Last seen</th><th>Fix</th><th>Last position</th><th class="num">Sentences</th><th class="num">Bad</th><th class="num">Bytes</th><th>Last error</th></tr>
+  </thead>
+  <tbody>
+  {% for d in devices %}
+    <tr>
+      <td><a href="{{ url_for('device_edit', device_id=d.id) }}">{{ d.name }}</a><br><span class="small muted mono">{{ d.host }}:{{ d.port }}</span>{% if not d.enabled %}<br><span class="small muted">disabled</span>{% endif %}</td>
+      <td>{{ d.state or 'idle' }}{% if d.state == 'connected' and d.connected_at %}<br><span class="small muted">since {{ d.connected_at|ts }}</span>{% endif %}</td>
+      <td>{{ d.last_seen|ago }}</td>
+      <td>{{ d.fix }}</td>
+      <td>{% if d.position %}<span class="mono">{{ '%.5f'|format(d.position.latitude) }}, {{ '%.5f'|format(d.position.longitude) }}</span><br><span class="small muted">{{ d.position.received_at|ago }}</span>{% else %}<span class="muted">none</span>{% endif %}</td>
+      <td class="num">{{ d.sentences_ok or 0 }}</td>
+      <td class="num">{{ d.sentences_bad or 0 }}</td>
+      <td class="num">{{ d.bytes_in or 0 }}</td>
+      <td class="small">{% if d.last_error %}{{ d.last_error }}<br><span class="muted">{{ d.last_error_at|ago }}</span>{% else %}-{% endif %}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="9" class="muted">No devices. <a href="{{ url_for('devices') }}">Add one</a>.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>Live values</h2>
+{% for d in devices if d.live %}
+<details{% if loop.index <= 2 %} open{% endif %}>
+  <summary>{{ d.name }} <span class="muted">({{ d.live|length }} sentence types)</span></summary>
+  <table>
+    <thead><tr><th>Sentence</th><th>Field</th><th>Value</th><th>Updated</th></tr></thead>
+    <tbody>
+    {% for sentence, fields in d.live.items()|sort %}
+      {% for field, (value, when) in fields.items()|sort %}
+        <tr>
+          <td>{% if loop.first %}{{ sentence }}{% endif %}</td>
+          <td class="mono">{{ field }}</td>
+          <td class="mono">{{ value }}</td>
+          <td class="small muted">{{ when|ago }}</td>
+        </tr>
+      {% endfor %}
+    {% endfor %}
+    </tbody>
+  </table>
+</details>
+{% else %}
+<p class="muted">No values received yet.</p>
+{% endfor %}
+
+{% if heartbeat and heartbeat.relay %}
+<h2>LAN relay</h2>
+<table class="stats">
+  <tr><td>State</td><td>{% if heartbeat.relay.running %}serving on port {{ heartbeat.relay.port }}{% else %}stopped{% endif %}</td></tr>
+  <tr><td>Advertised over mDNS</td><td>{{ 'yes, _nmea-0183._tcp' if heartbeat.relay.advertised else 'no' }}</td></tr>
+  <tr><td>Clients connected</td><td>{{ heartbeat.relay.clients }}</td></tr>
+  <tr><td>Sentences sent</td><td>{{ heartbeat.relay.sent }}{% if heartbeat.relay.dropped %} <span class="muted">({{ heartbeat.relay.dropped }} dropped)</span>{% endif %}</td></tr>
+</table>
+{% endif %}
+
+{% if heartbeat %}
+<p class="small muted">Collector last reported {{ heartbeat.ts|ago }} (pid {{ heartbeat.pid }}). Settings: position every {{ s.position_interval_s }} s, sentences kept {{ s.sentence_retention_days or 'forever' }} days.</p>
+{% endif %}
+{% endblock %}

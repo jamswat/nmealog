@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Devices</h1>
+
+<table>
+  <thead><tr><th>Name</th><th>Address</th><th>Enabled</th><th>State</th><th>Last seen</th><th class="num">Sentences</th><th>Last error</th></tr></thead>
+  <tbody>
+  {% for d in devices %}
+    <tr>
+      <td><a href="{{ url_for('device_edit', device_id=d.id) }}">{{ d.name }}</a></td>
+      <td class="mono">{{ d.host }}:{{ d.port }}</td>
+      <td>{{ 'yes' if d.enabled else 'no' }}</td>
+      <td>{{ d.state or 'idle' }}</td>
+      <td>{{ d.last_seen|ago }}</td>
+      <td class="num">{{ d.sentences_ok or 0 }}</td>
+      <td class="small">{{ d.last_error or '-' }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="7" class="muted">No devices yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>Add device</h2>
+<form method="post" action="{{ url_for('devices_create') }}">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="row"><label for="name">Name</label><input type="text" id="name" name="name" value="{{ values.name or '' }}" required maxlength="50"></div>
+  {% if errors.name %}<span class="field-error">{{ errors.name }}</span>{% endif %}
+  <div class="row"><label for="host">Host or IP</label><input type="text" id="host" name="host" value="{{ values.host or '' }}" required maxlength="253" placeholder="192.168.1.100"></div>
+  {% if errors.host %}<span class="field-error">{{ errors.host }}</span>{% endif %}
+  <div class="row"><label for="port">TCP port</label><input type="number" id="port" name="port" value="{{ values.port or '' }}" min="1" max="65535" required placeholder="4001"></div>
+  {% if errors.port %}<span class="field-error">{{ errors.port }}</span>{% endif %}
+  <div class="row"><label for="notes">Notes</label><input type="text" id="notes" name="notes" value="{{ values.notes or '' }}" maxlength="500"></div>
+  <div class="row"><label for="enabled">Enabled</label><input type="checkbox" id="enabled" name="enabled"{% if values.enabled %} checked{% endif %}></div>
+  <div class="row"><button type="submit">Add device</button></div>
+</form>
+{% endblock %}

@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ device.name }}</h1>
+
+<form method="post" action="{{ url_for('device_update', device_id=device.id) }}">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="row"><label for="name">Name</label><input type="text" id="name" name="name" value="{{ values.name or '' }}" required maxlength="50"></div>
+  {% if errors.name %}<span class="field-error">{{ errors.name }}</span>{% endif %}
+  <div class="row"><label for="host">Host or IP</label><input type="text" id="host" name="host" value="{{ values.host or '' }}" required maxlength="253"></div>
+  {% if errors.host %}<span class="field-error">{{ errors.host }}</span>{% endif %}
+  <div class="row"><label for="port">TCP port</label><input type="number" id="port" name="port" value="{{ values.port or '' }}" min="1" max="65535" required></div>
+  {% if errors.port %}<span class="field-error">{{ errors.port }}</span>{% endif %}
+  <div class="row"><label for="notes">Notes</label><input type="text" id="notes" name="notes" value="{{ values.notes or '' }}" maxlength="500"></div>
+  <div class="row"><label for="enabled">Enabled</label><input type="checkbox" id="enabled" name="enabled"{% if values.enabled in (1, 'on', True) %} checked{% endif %}></div>
+  <div class="row"><button type="submit">Save</button></div>
+</form>
+
+<h2>Status</h2>
+{% if status %}
+<table class="stats">
+  <tr><td>State</td><td>{{ status.state }}</td></tr>
+  <tr><td>Connected since</td><td>{{ status.connected_at|ts }}</td></tr>
+  <tr><td>Last seen</td><td>{{ status.last_seen|ago }}</td></tr>
+  <tr><td>Last error</td><td>{{ status.last_error or '-' }} {% if status.last_error_at %}<span class="muted">({{ status.last_error_at|ago }})</span>{% endif %}</td></tr>
+  <tr><td>Good / bad sentences</td><td>{{ status.sentences_ok }} / {{ status.sentences_bad }}</td></tr>
+  <tr><td>GPS time</td><td>{{ status.gps_time|ts }}{% if status.clock_offset_s is not none %} <span class="muted">(offset {{ '%+.2f'|format(status.clock_offset_s) }} s)</span>{% endif %}</td></tr>
+</table>
+{% else %}
+<p class="muted">No status yet.</p>
+{% endif %}
+
+<h2>Data</h2>
+<table class="stats">
+  <tr><td>Sentences stored</td><td>{{ counts.sentences }}</td></tr>
+  <tr><td>Positions stored</td><td>{{ counts.positions }}</td></tr>
+</table>
+<div class="actions">
+  <form method="post" action="{{ url_for('device_test', device_id=device.id) }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit">Test connection</button>
+  </form>
+  <form method="post" action="{{ url_for('device_clear', device_id=device.id) }}" onsubmit="return confirm('Delete all stored sentences, positions and live values for this device?');">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit" class="danger">Clear data</button>
+  </form>
+  <form method="post" action="{{ url_for('device_delete', device_id=device.id) }}" onsubmit="return confirm('Delete this device and all its data?');">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit" class="danger">Delete device</button>
+  </form>
+</div>
+{% endblock %}

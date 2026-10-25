@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Maintenance</h1>
+
+<h2>Database</h2>
+<table class="stats">
+  <tr><td>Database file</td><td>{{ stats.file_bytes|size }} <span class="muted">(WAL {{ stats.wal_bytes|size }})</span></td></tr>
+  <tr><td>Free space inside file</td><td>{{ stats.free_bytes|size }} <span class="muted">(reclaimed automatically by pruning)</span></td></tr>
+  <tr><td>Disk free</td><td>{{ stats.disk_free|size }} of {{ stats.disk_total|size }}</td></tr>
+  <tr><td>Size limit</td><td>{% if s.max_db_size_mb %}{{ s.max_db_size_mb }} MB{% else %}none{% endif %}</td></tr>
+  <tr><td>Retention</td><td>sentences {{ s.sentence_retention_days or 'forever' }} days, positions {{ s.position_retention_days or 'forever' }} days</td></tr>
+  <tr><td>Journal / auto-vacuum</td><td>{{ stats.journal_mode }} / {{ {0: 'none', 1: 'full', 2: 'incremental'}.get(stats.auto_vacuum, stats.auto_vacuum) }}</td></tr>
+  <tr><td>Sentences</td><td>{{ '{:,}'.format(stats.counts.sentences) }}{% if stats.ranges.sentences[0] %} <span class="muted">from {{ stats.ranges.sentences[0]|ts }} to {{ stats.ranges.sentences[1]|ts }}</span>{% endif %}</td></tr>
+  <tr><td>Positions</td><td>{{ '{:,}'.format(stats.counts.positions) }}{% if stats.ranges.positions[0] %} <span class="muted">from {{ stats.ranges.positions[0]|ts }} to {{ stats.ranges.positions[1]|ts }}</span>{% endif %}</td></tr>
+  <tr><td>Live values / devices</td><td>{{ stats.counts.latest }} / {{ stats.counts.devices }}</td></tr>
+</table>
+
+<h2>Growth estimate</h2>
+{% if not growth.enough_data %}
+<p class="muted">Needs at least one hour of data to estimate. Current size: {{ growth.current_bytes|size }}.</p>
+{% else %}
+<table>
+  <thead><tr><th>Table</th><th class="num">Rows per day</th><th class="num">Bytes per row</th><th class="num">Growth per day</th><th class="num">Kept for</th><th class="num">Steady-state size</th></tr></thead>
+  <tbody>
+  {% for name, t in growth.tables.items() %}
+    <tr>
+      <td>{{ name }}</td>
+      <td class="num">{{ '{:,.0f}'.format(t.rows_per_day) }}</td>
+      <td class="num">{{ t.bytes_per_row|round(0)|int }} B</td>
+      <td class="num">{{ t.daily_bytes|size }}</td>
+      <td class="num">{{ t.retention_days or 'forever' }}{% if t.retention_days %} days{% endif %}</td>
+      <td class="num">{{ t.steady_bytes|size if t.steady_bytes is not none else 'unbounded' }}</td>
+    </tr>
+  {% endfor %}
+  <tr>
+    <td><strong>Total</strong></td><td></td><td></td>
+    <td class="num"><strong>{{ growth.daily_bytes|size }}</strong></td><td></td>
+    <td class="num"><strong>{{ growth.steady_bytes|size if growth.steady_bytes is not none else 'unbounded' }}</strong></td>
+  </tr>
+  </tbody>
+</table>
+<p class="small">
+  {% if growth.cap_bytes %}Size cap: {{ growth.cap_bytes|size }}. {% else %}No size cap. {% endif %}
+  {% if growth.days_to_cap is not none %}At this rate the cap is reached in about {{ '%.0f'|format(growth.days_to_cap) }} days.
+  {% elif growth.effective_days is not none %}The cap is already reached, so the oldest data is removed to stay under it.{% endif %}
+  {% if growth.effective_days is not none and growth.days_to_cap is not none %} Once it is reached, data is kept for about {{ '%.0f'|format(growth.effective_days) }} days.
+  {% elif growth.effective_days is not none %} Data is kept for about {{ '%.0f'|format(growth.effective_days) }} days.{% endif %}
+</p>
+<p class="muted small">Based on the last {{ '%.1f'|format(growth.span_hours) }} hours of data
+  ({{ 'measured per-row sizes from the database' if growth.method == 'measured' else 'estimated per-row sizes; dbstat is unavailable' }}).
+  Steady-state size is the daily growth multiplied by the retention period. Estimates become more accurate as data accumulates.</p>
+{% endif %}
+
+<h2>Actions</h2>
+<div class="actions">
+  <form method="post" action="{{ url_for('maintenance_action', action='prune') }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Prune by age now</button></form>
+  <form method="post" action="{{ url_for('maintenance_action', action='enforce-size') }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Enforce size limit now</button></form>
+  <form method="post" action="{{ url_for('maintenance_action', action='reclaim') }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Reclaim free space</button></form>
+  <form method="post" action="{{ url_for('maintenance_action', action='checkpoint') }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Checkpoint WAL</button></form>
+  <form method="post" action="{{ url_for('maintenance_action', action='optimize') }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Optimize</button></form>
+  <form method="post" action="{{ url_for('maintenance_action', action='integrity') }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Integrity check</button></form>
+  <form method="post" action="{{ url_for('maintenance_action', action='vacuum') }}" onsubmit="return confirm('VACUUM rebuilds the whole file. It needs free disk space about equal to the database size and can take a while. Continue?');"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Vacuum (full rebuild)</button></form>
+</div>
+<p class="muted small">Pruning and the size limit run automatically per <a href="{{ url_for('settings_page') }}">Settings</a>. Reclaim returns freed pages to the disk without locking the database.</p>
+
+<h2>Delete data before a date</h2>
+<form method="post" action="{{ url_for('maintenance_delete_data') }}">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="row"><label for="table">Table</label>
+    <select id="table" name="table"><option value="sentences">sentences</option><option value="positions">positions</option></select></div>
+  <div class="row"><label for="device">Device</label>
+    <select id="device" name="device"><option value="">All devices</option>
+      {% for d in devices %}<option value="{{ d.id }}">{{ d.name }}</option>{% endfor %}</select></div>
+  <div class="row"><label for="before">Delete rows older than</label><input type="date" id="before" name="before" required></div>
+  <div class="row"><label for="confirm">Type DELETE to confirm</label><input type="text" id="confirm" name="confirm" autocomplete="off"></div>
+  <div class="row"><button type="submit" class="danger">Delete</button></div>
+</form>
+
+<h2>Backups</h2>
+<form method="post" action="{{ url_for('maintenance_action', action='backup') }}" class="row"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Create backup now</button>
+  <span class="muted small">Automatic backups: {% if s.auto_backup %}every {{ s.backup_interval_h }} h, keeping {{ s.backup_keep }}{% else %}off{% endif %}</span></form>
+{% if backups %}
+<table>
+  <thead><tr><th>File</th><th class="num">Size</th><th>Created</th><th>Actions</th></tr></thead>
+  <tbody>
+  {% for b in backups %}
+    <tr>
+      <td class="mono">{{ b.name }}</td>
+      <td class="num">{{ b.size|size }}</td>
+      <td>{{ b.modified|ts }}</td>
+      <td class="actions">
+        <a class="button" href="{{ url_for('backup_download', name=b.name) }}">Download</a>
+        <form method="post" action="{{ url_for('backup_restore', name=b.name) }}" class="inline">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="source" value="{{ b.name }}">
+          <input type="text" name="confirm" placeholder="RESTORE" size="8" autocomplete="off">
+          <button type="submit" class="danger">Restore</button>
+        </form>
+        <form method="post" action="{{ url_for('backup_delete', name=b.name) }}" class="inline" onsubmit="return confirm('Delete this backup?');">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <button type="submit">Delete</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No backups yet.</p>
+{% endif %}
+
+<h2>Restore from file</h2>
+<p class="muted small">Replaces all current data and settings with the uploaded database. The current state is backed up first. Restoring a backup from a different schema version is refused.</p>
+<form method="post" action="{{ url_for('restore_upload') }}" enctype="multipart/form-data">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="row"><label for="file">Backup file</label><input type="file" id="file" name="file" accept=".sqlite3,.db"></div>
+  <div class="row"><label for="confirm-upload">Type RESTORE to confirm</label><input type="text" id="confirm-upload" name="confirm" autocomplete="off"></div>
+  <div class="row"><button type="submit" class="danger">Restore</button></div>
+</form>
+
+<h2>Activity log</h2>
+<table>
+  <thead><tr><th>Time</th><th>Who</th><th>Action</th><th>Detail</th></tr></thead>
+  <tbody>
+  {% for r in log_rows %}
+    <tr><td class="small">{{ r.at|ts }}</td><td>{{ r.actor }}</td><td>{{ r.action }}</td><td class="small">{{ r.detail }}</td></tr>
+  {% else %}
+    <tr><td colspan="4" class="muted">Nothing logged yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
