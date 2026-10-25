@@ -83,10 +83,10 @@ def app(cfg):
     _add_latest(conn, 1, "GGA", "horizontal_dil", "0.9")
     _add_latest(conn, 1, "RMC", "spd_over_grnd", "8.5")
     _add_latest(conn, 1, "RMC", "true_course", "90.0")
-    _add_latest(conn, 1, "VTG", "sog", "8.5")
-    _add_latest(conn, 1, "VTG", "cog_t", "90.0")
+    _add_latest(conn, 1, "VTG", "spd_over_grnd_kts", "8.5")
+    _add_latest(conn, 1, "VTG", "true_track", "90.0")
     _add_latest(conn, 1, "HDT", "heading", "180.5")
-    _add_latest(conn, 1, "ROT", "rate", "0.5")
+    _add_latest(conn, 1, "ROT", "rate_of_turn", "0.5")
     conn.close()
     return a
 

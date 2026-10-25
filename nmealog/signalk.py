@@ -41,14 +41,14 @@ SignalKMap = dict[str, Any]
 
 _FIELD_MAP: dict[tuple[str, str], SignalKMap] = {
     # --- Position (GGA) ---
-    ("GGA", "latitude"): {
+    ("GGA", "lat"): {
         "ctx": "position",
         "pgn": 129025,
         "description": "Position",
         "units": "deg",
         "converter": float,
     },
-    ("GGA", "longitude"): {
+    ("GGA", "lon"): {
         "ctx": "position",
         "pgn": 129025,
         "description": "Position",
@@ -84,14 +84,14 @@ _FIELD_MAP: dict[tuple[str, str], SignalKMap] = {
         "converter": float,
     },
     # --- Position (RMC) ---
-    ("RMC", "latitude"): {
+    ("RMC", "lat"): {
         "ctx": "position",
         "pgn": 129025,
         "description": "Position",
         "units": "deg",
         "converter": float,
     },
-    ("RMC", "longitude"): {
+    ("RMC", "lon"): {
         "ctx": "position",
         "pgn": 129025,
         "description": "Position",
@@ -113,14 +113,14 @@ _FIELD_MAP: dict[tuple[str, str], SignalKMap] = {
         "converter": float,
     },
     # --- Position (GLL) ---
-    ("GLL", "latitude"): {
+    ("GLL", "lat"): {
         "ctx": "position",
         "pgn": 129025,
         "description": "Position",
         "units": "deg",
         "converter": float,
     },
-    ("GLL", "longitude"): {
+    ("GLL", "lon"): {
         "ctx": "position",
         "pgn": 129025,
         "description": "Position",
@@ -128,14 +128,14 @@ _FIELD_MAP: dict[tuple[str, str], SignalKMap] = {
         "converter": float,
     },
     # --- Speed / Course (VTG) ---
-    ("VTG", "cog_t"): {
+    ("VTG", "true_track"): {
         "ctx": "courseOverGroundTrue",
         "pgn": 129026,
         "description": "Course Over Ground (True)",
         "units": "deg",
         "converter": float,
     },
-    ("VTG", "sog"): {
+    ("VTG", "spd_over_grnd_kts"): {
         "ctx": "speedOverGround",
         "pgn": 129026,
         "description": "Speed Over Ground",
@@ -158,14 +158,14 @@ _FIELD_MAP: dict[tuple[str, str], SignalKMap] = {
         "units": "deg",
         "converter": float,
     },
-    ("HDG", "dev"): {
+    ("HDG", "deviation"): {
         "ctx": "deviation",
         "pgn": 127250,
         "description": "Magnetic Deviation",
         "units": "deg",
         "converter": float,
     },
-    ("HDG", "var"): {
+    ("HDG", "variation"): {
         "ctx": "variation",
         "pgn": 127250,
         "description": "Magnetic Variation",
@@ -173,7 +173,7 @@ _FIELD_MAP: dict[tuple[str, str], SignalKMap] = {
         "converter": float,
     },
     # --- Rate of Turn (ROT) ---
-    ("ROT", "rate"): {
+    ("ROT", "rate_of_turn"): {
         "ctx": "rateOfTurn",
         "pgn": 127251,
         "description": "Rate of Turn",
@@ -352,11 +352,12 @@ def build_vessel(
         for part in parts:
             current = current.setdefault(part, {})
         if ctx == "position" and "value" not in current:
-            # Build position.value from the collected fields
+            # Build position.value from the collected fields.
+            # Map NMEA field names (lat, lon) to Signal K names (latitude, longitude).
             pos_value = {}
-            for fld in ("latitude", "longitude", "altitude"):
-                if fld in data:
-                    pos_value[fld] = data[fld]
+            for nmea_fld, sk_fld in (("lat", "latitude"), ("lon", "longitude"), ("altitude", "altitude")):
+                if nmea_fld in data:
+                    pos_value[sk_fld] = data[nmea_fld]
             if pos_value:
                 current["value"] = pos_value
         elif ctx != "position":

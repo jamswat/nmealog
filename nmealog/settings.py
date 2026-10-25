@@ -105,9 +105,9 @@ def coerce(setting: Setting, raw: Any) -> Any:
             raise ValueError(f"{setting.label} must be at most {setting.maximum}")
         return value
     value = str(raw).strip()
-    if not value:
-        raise ValueError(f"{setting.label} is required")
     if setting.key == "display_tz":
+        if not value:
+            raise ValueError(f"{setting.label} is required")
         try:
             ZoneInfo(value)
         except (ZoneInfoNotFoundError, ValueError):
