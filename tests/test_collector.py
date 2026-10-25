@@ -1,3 +1,4 @@
+import json
 import socket
 import threading
 import time
@@ -209,6 +210,37 @@ def test_relay_forwards_only_the_selected_device(sim_server, cfg):
         conn.close()
         assert heartbeat is not None
         client.close()
+    finally:
+        stop.set()
+        t.join(timeout=15)
+
+
+def test_heartbeat_reports_performance_metrics(sim_server, cfg):
+    port, start, _ = sim_server
+    _add_device(cfg, port)
+    start()
+    stop, t = _run_collector(cfg)
+    try:
+        conn = connect(cfg.db_path)
+
+        def has_perf():
+            row = conn.execute("SELECT value FROM meta WHERE key = 'collector_heartbeat'").fetchone()
+            if not row:
+                return False
+            perf = json.loads(row[0]).get("perf") or {}
+            return perf.get("rows_written_total", 0) > 0
+
+        assert _wait(has_perf, timeout=20)
+        perf = json.loads(conn.execute(
+            "SELECT value FROM meta WHERE key = 'collector_heartbeat'").fetchone()[0])["perf"]
+        conn.close()
+        for key in ("pending_rows", "rows_written_total", "flushes", "sentences_per_s",
+                    "positions_per_s", "bytes_per_s", "flush_ms_avg", "flush_ms_max", "window_s"):
+            assert key in perf, f"heartbeat perf is missing {key!r}: {perf}"
+        assert perf["rows_written_total"] > 0
+        assert perf["flushes"] > 0
+        assert perf["flush_ms_avg"] >= 0
+        assert perf["pending_rows"] >= 0
     finally:
         stop.set()
         t.join(timeout=15)

@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import re
 import time
 
@@ -295,6 +296,42 @@ def test_relay_settings_save_and_device_dropdown(client, cfg):
     conn.close()
     bad = client.post("/settings", headers=AUTH, data={"csrf": token, "relay_port": "70000"})
     assert bad.status_code == 400
+
+
+def test_maintenance_page_performance_section(client, cfg):
+    page = client.get("/maintenance", headers=AUTH).get_data(as_text=True)
+    assert "Performance" in page
+    assert "No collector heartbeat yet" in page
+
+    conn = connect(cfg.db_path)
+    heartbeat = {
+        "ts": time.time(), "pid": 4242, "workers": ["gps", "gyro"],
+        "storage_error": None, "relay": None,
+        "perf": {
+            "pending_rows": 0, "rows_written_total": 1234, "flushes": 57,
+            "sentences_per_s": 9.5, "positions_per_s": 0.02, "bytes_per_s": 2500.0,
+            "flush_ms_avg": 2.5, "flush_ms_max": 9.0, "window_s": 60.0,
+        },
+    }
+    conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('collector_heartbeat', ?)",
+                 (json.dumps(heartbeat),))
+    conn.close()
+    page = client.get("/maintenance", headers=AUTH).get_data(as_text=True)
+    assert "Performance" in page
+    assert "pid 4242" in page
+    assert "2 device workers" in page
+    assert "9.5" in page                       # sentences per second
+    assert "2.5 ms avg, 9.0 ms max" in page
+    assert "1,234" in page                    # rows written this run (comma-formatted)
+    assert "collector is behind" not in page
+
+    conn = connect(cfg.db_path)
+    heartbeat["ts"] = time.time() - 600        # stale heartbeat → flagged
+    conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('collector_heartbeat', ?)",
+                 (json.dumps(heartbeat),))
+    conn.close()
+    page = client.get("/maintenance", headers=AUTH).get_data(as_text=True)
+    assert "not reporting" in page
 
 
 def test_device_test_page_renders_for_a_device(client, cfg, monkeypatch):

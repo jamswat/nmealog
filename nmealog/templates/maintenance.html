@@ -15,6 +15,28 @@
   <tr><td>Live values / devices</td><td>{{ stats.counts.latest }} / {{ stats.counts.devices }}</td></tr>
 </table>
 
+<h2>Performance</h2>
+{% if perf is none %}
+<p class="muted">No collector heartbeat yet. These numbers are reported by the collector every few seconds while it runs.</p>
+{% else %}
+<table class="stats">
+  <tr>
+    <td>Collector</td>
+    <td>{% if perf.fresh %}running <span class="muted">(pid {{ perf.pid }}, {{ perf.workers|length }} device worker{{ '' if perf.workers|length == 1 else 's' }})</span>
+      {% else %}<span class="error-text">not reporting — last seen {{ perf.ts|ago }}</span>{% endif %}</td>
+  </tr>
+  <tr><td>Sentences per second</td><td>{{ '%.1f'|format(perf.sentences_per_s) }} <span class="muted">over the last {{ perf.window_s|round|int }} s</span></td></tr>
+  <tr><td>Positions per second</td><td>{{ '%.2f'|format(perf.positions_per_s) }}</td></tr>
+  <tr><td>Bytes received per second</td><td>{{ perf.bytes_per_s|size }}/s</td></tr>
+  <tr><td>Rows waiting to be written</td><td>{{ perf.pending_rows }}{% if perf.pending_rows %} <span class="error-text">— collector is behind</span>{% endif %}</td></tr>
+  <tr><td>Write time</td><td>{{ '%.1f'|format(perf.flush_ms_avg) }} ms avg, {{ '%.1f'|format(perf.flush_ms_max) }} ms max <span class="muted">({{ perf.flushes }} flush{{ '' if perf.flushes == 1 else 'es' }}, {{ '{:,}'.format(perf.rows_written_total) }} rows this run)</span></td></tr>
+</table>
+{% if perf.pending_rows %}
+<div class="warning">Rows are queuing up faster than they can be written. If this stays above zero, the collector drops the oldest data at 20 000 pending rows.</div>
+{% endif %}
+<p class="muted small">Throughput is measured as data is written, not as it is received. If the rows-waiting count stays near zero and write times are low, the collector is keeping up. Write time excludes the 1-second batching interval.</p>
+{% endif %}
+
 <h2>Growth estimate</h2>
 {% if not growth.enough_data %}
 <p class="muted">Needs at least one hour of data to estimate. Current size: {{ growth.current_bytes|size }}.</p>

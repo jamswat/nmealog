@@ -112,6 +112,16 @@ docker cp nmealog-collector-1:/data/copy.sqlite3 .
 - Deleted pages are returned to the disk with `incremental_vacuum`, which does not lock the database. A full VACUUM is only needed to shrink the file after large deletions in older databases, and it needs free disk space about equal to the database size.
 - Check disk space on the Maintenance page. The status page warns below 1 GB free.
 
+## Performance
+
+The **Performance** section near the top of the Maintenance page shows whether the collector is keeping up with the incoming NMEA stream, as measured by the single database writer in the collector process:
+
+- **Sentences and positions per second** over the last 60 seconds, and **bytes per second** received from the devices.
+- **Rows waiting to be written** — the writer's backlog. It should hover near zero. If it stays above zero the collector cannot write fast enough, and at 20 000 pending rows the oldest data is dropped (the page warns when this happens).
+- **Write time** (average and worst flush in milliseconds) and how many rows were written since the collector started.
+
+The metrics come from the collector's 10-second heartbeat, so they are read-only and add no query load. If the collector is not running, the page says so and shows no fresh numbers.
+
 ## Growth estimate
 
 The Maintenance page projects how fast the database grows:

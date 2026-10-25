@@ -5,6 +5,7 @@ import json
 import time
 
 import pytest
+from email.utils import formatdate, parsedate_to_datetime
 from werkzeug.security import generate_password_hash
 
 from nmealog.config import Config
@@ -406,3 +407,32 @@ class TestSignalKContentType:
     def test_api_v1_mimetype_json(self, client):
         resp = client.get("/api/v1/current")
         assert resp.mimetype == "application/json"
+
+
+class TestConditionalRequests:
+    """Last-Modified / If-Modified-Since (304) on the API endpoints."""
+
+    def test_304_when_unchanged(self, client):
+        r1 = client.get("/api/v1/current")
+        assert r1.status_code == 200
+        lm = r1.headers.get("Last-Modified")
+        assert lm
+        assert r1.headers.get("Cache-Control") == "no-cache"
+        r2 = client.get("/api/v1/current", headers={"If-Modified-Since": lm})
+        assert r2.status_code == 304
+        assert r2.get_data() == b""
+
+    def test_200_when_data_is_newer(self, client):
+        r1 = client.get("/api/v1/current")
+        lm = r1.headers["Last-Modified"]
+        older = formatdate(parsedate_to_datetime(lm).timestamp() - 3600, usegmt=True)
+        r2 = client.get("/api/v1/current", headers={"If-Modified-Since": older})
+        assert r2.status_code == 200
+
+    def test_positions_and_signalk_get_last_modified(self, client):
+        for path in ("/api/v1/positions", "/signalk/v1/api/vessels/self/"):
+            resp = client.get(path)
+            assert resp.status_code == 200, path
+            assert resp.headers.get("Last-Modified"), path
+            stale = client.get(path, headers={"If-Modified-Since": resp.headers["Last-Modified"]})
+            assert stale.status_code == 304, path
