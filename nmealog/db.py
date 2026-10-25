@@ -51,6 +51,8 @@ STATEMENTS = (
         fields TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS sentences_time ON sentences(received_at)",
     "CREATE INDEX IF NOT EXISTS sentences_device_type ON sentences(device_id, sentence, received_at)",
+    # Composite index for "latest position per device" and device+time-range filters.
+    "CREATE INDEX IF NOT EXISTS sentences_device_time ON sentences(device_id, received_at)",
     """CREATE TABLE IF NOT EXISTS latest (
         device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
         sentence TEXT NOT NULL,
@@ -71,6 +73,7 @@ STATEMENTS = (
         satellites INTEGER,
         hdop REAL)""",
     "CREATE INDEX IF NOT EXISTS positions_time ON positions(received_at)",
+    "CREATE INDEX IF NOT EXISTS positions_device_time ON positions(device_id, received_at)",
     """CREATE TABLE IF NOT EXISTS maintenance_log (
         id INTEGER PRIMARY KEY,
         at REAL NOT NULL,
@@ -91,6 +94,8 @@ def connect(path: Path | str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA temp_store = MEMORY")
+    conn.execute("PRAGMA cache_size = -8192")  # 8 MiB per connection
     return conn
 
 

@@ -16,6 +16,7 @@ import sqlite3
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from email.utils import formatdate, parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -453,13 +454,53 @@ def create_app(cfg: Config | None = None) -> Flask:
 
     # --- API: Signal K ---------------------------------------------------
 
-    def _json_response(data: Any, status: int = 200) -> Response:
+    def _json_response(data: Any, status: int = 200, headers: dict[str, str] | None = None) -> Response:
         return Response(
             json.dumps(data, default=str),
             status=status,
             mimetype="application/vnd.signalk+json" if request.path.startswith("/signalk/")
             else "application/json",
+            headers=headers,
         )
+
+    def _http_date(epoch: float) -> str:
+        return formatdate(epoch, usegmt=True)
+
+    def _not_modified(last_modified: float | None) -> Response | None:
+        """Return a 304 Response when *If-Modified-Since* covers *last_modified*.
+
+        HTTP dates only have one-second resolution, so both sides are floored
+        to whole seconds before comparing.
+        """
+        if last_modified is None:
+            return None
+        ims = request.headers.get("If-Modified-Since")
+        if not ims:
+            return None
+        try:
+            since = parsedate_to_datetime(ims)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        if int(last_modified) <= int(since.timestamp()):
+            return Response(status=304)
+        return None
+
+    def _cache_headers(last_modified: float | None) -> dict[str, str]:
+        headers = {"Cache-Control": "no-cache"}  # clients must re-validate, but cheaply
+        if last_modified is not None:
+            headers["Last-Modified"] = _http_date(last_modified)
+        return headers
+
+    def _latest_epoch(db) -> float | None:
+        """Newest received_at across live values and positions (both MAX lookups are indexed)."""
+        values = [
+            db.execute("SELECT MAX(received_at) FROM positions").fetchone()[0],
+            db.execute("SELECT MAX(received_at) FROM latest").fetchone()[0],
+        ]
+        values = [v for v in values if v is not None]
+        return max(values) if values else None
 
     def _iso_ts(epoch: float | None) -> str | None:
         if epoch is None:
@@ -496,40 +537,52 @@ def create_app(cfg: Config | None = None) -> Flask:
         if parts[0] == "vessels":
             if len(parts) == 1:
                 # Full vessel list
+                last_modified = _latest_epoch(db)
+                resp_304 = _not_modified(last_modified)
+                if resp_304 is not None:
+                    return resp_304
                 tree = signalk_module.build_full_tree(db)
-                return _json_response(tree)
+                return _json_response(tree, headers=_cache_headers(last_modified))
 
             vessel_id = parts[1]
             subpath = "/".join(parts[2:]) if len(parts) > 2 else ""
 
-            # Build the tree and resolve the requested path
-            full = signalk_module.build_full_tree(db)
-            vessels = full.get("vessels", {})
-
-            target_vessel = None
+            # Resolve the requested vessel without building the whole tree.
             if vessel_id == "self":
-                self_key = full.get("self")
-                target_vessel = vessels.get(self_key) if self_key else None
-                if target_vessel is None:
-                    target_vessel = vessels.get("self")
+                did = signalk_module.self_device(db)
             else:
-                target_vessel = vessels.get(vessel_id)
-
-            if target_vessel is None:
+                prefix = "urn:mrn:signalk:uuid:nmealog-"
+                if not vessel_id.startswith(prefix):
+                    return _json_response({"error": "Vessel not found"}, 404)
+                try:
+                    did = int(vessel_id[len(prefix):])
+                except ValueError:
+                    return _json_response({"error": "Vessel not found"}, 404)
+            if did is None:
                 return _json_response({"error": "Vessel not found"}, 404)
 
-            if not subpath:
-                return _json_response(target_vessel)
+            last_modified = _latest_epoch(db)
+            resp_304 = _not_modified(last_modified)
+            if resp_304 is not None:
+                return resp_304
 
-            parts_left = subpath.split("/")
+            navigation = signalk_module.build_vessel_for_device(db, did) or {}
+            if not navigation:
+                return _json_response({"error": "Vessel not found"}, 404)
+            target_vessel = {"navigation": navigation}
+            headers = _cache_headers(last_modified)
+
+            if not subpath:
+                return _json_response(target_vessel, headers=headers)
+
             current = target_vessel
-            for part in parts_left:
+            for part in subpath.split("/"):
                 if not isinstance(current, dict):
                     return _json_response({"error": "Path not found"}, 404)
                 current = current.get(part)
                 if current is None:
                     return _json_response({"error": "Path not found"}, 404)
-            return _json_response(current)
+            return _json_response(current, headers=headers)
 
         return _json_response({"error": "Not found"}, 404)
 
@@ -553,6 +606,13 @@ def create_app(cfg: Config | None = None) -> Flask:
             limit = min(max(int(request.args.get("limit", 20000)), 1), 20000)
         except ValueError:
             abort(400, "limit must be a whole number")
+
+        last_modified = db.execute(
+            f"SELECT MAX(positions.received_at) FROM positions WHERE {where}", params).fetchone()[0]
+        resp_304 = _not_modified(last_modified)
+        if resp_304 is not None:
+            return resp_304
+        headers = _cache_headers(last_modified)
 
         rows = db.execute(
             f"SELECT positions.*, devices.name AS device_name FROM positions "
@@ -584,6 +644,7 @@ def create_app(cfg: Config | None = None) -> Flask:
             return Response(
                 json.dumps({"type": "FeatureCollection", "features": features}, default=str),
                 mimetype="application/geo+json",
+                headers=headers,
             )
 
         # Default JSON format (same shape as the existing /api/positions)
@@ -592,7 +653,7 @@ def create_app(cfg: Config | None = None) -> Flask:
             "speed": r["speed_kn"], "course": r["course_true"], "source": r["source"],
             "device": r["device_name"],
         } for r in rows]
-        return {"tz": settings()["display_tz"], "points": points}
+        return _json_response({"tz": settings()["display_tz"], "points": points}, headers=headers)
 
     # --- API: Current state -----------------------------------------------
 
@@ -607,6 +668,12 @@ def create_app(cfg: Config | None = None) -> Flask:
         db = get_db()
         s = settings()
         now = time.time()
+
+        last_modified = _latest_epoch(db)
+        resp_304 = _not_modified(last_modified)
+        if resp_304 is not None:
+            return resp_304
+        headers = _cache_headers(last_modified)
 
         devices_rows = db.execute(
             "SELECT d.id, d.name, d.host, d.port, d.enabled, "
@@ -677,7 +744,7 @@ def create_app(cfg: Config | None = None) -> Flask:
                 "collectorAlive": bool(heartbeat and now - heartbeat.get("ts", 0) < 60),
             },
             "devices": result_devices,
-        })
+        }, headers=headers)
 
     # --- devices ----------------------------------------------------------
 
@@ -884,9 +951,19 @@ def create_app(cfg: Config | None = None) -> Flask:
         stats = maintenance.db_stats(db, cfg.db_path, cfg.data_dir)
         log_rows = db.execute("SELECT * FROM maintenance_log ORDER BY id DESC LIMIT 100").fetchall()
         growth = maintenance.growth_estimate(db, cfg.db_path, settings(), time.time())
+        perf = None
+        raw = get_meta(db, "collector_heartbeat")
+        if raw:
+            heartbeat = json.loads(raw)
+            if heartbeat.get("perf") and heartbeat.get("ts") is not None:
+                perf = dict(heartbeat["perf"])
+                perf["ts"] = heartbeat["ts"]
+                perf["pid"] = heartbeat.get("pid")
+                perf["workers"] = heartbeat.get("workers", [])
+                perf["fresh"] = time.time() - heartbeat["ts"] < 90
         return render_template("maintenance.html", title="Maintenance", stats=stats, growth=growth,
                                backups=maintenance.list_backups(cfg.backup_dir), log_rows=log_rows,
-                               devices=_devices(), s=settings())
+                               devices=_devices(), s=settings(), perf=perf)
 
     def _run(label: str, action):
         db = get_db()

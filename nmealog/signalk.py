@@ -21,6 +21,8 @@ __all__ = [
     "fetch_latest",
     "field_to_signalk",
     "iso_time",
+    "build_vessel_for_device",
+    "self_device",
 ]
 
 SIGNALK_VERSION = "1.0.0"
@@ -386,6 +388,40 @@ def _reverse_lookup(ctx: str) -> tuple[str, str]:
         if m["ctx"] == ctx:
             return (sen, fld)
     return ("", "")
+
+
+def build_vessel_for_device(conn: sqlite3.Connection, device_id: int) -> dict[str, Any] | None:
+    """Build the Signal K navigation tree for a single enabled device.
+
+    This avoids building the full tree for every vessel when only one is
+    requested.  Returns *None* when the device does not exist or is disabled.
+    """
+    dev = conn.execute(
+        "SELECT id, name FROM devices WHERE id = ? AND enabled = 1", (device_id,)
+    ).fetchone()
+    if dev is None:
+        return None
+    latest = [dict(r) for r in conn.execute(
+        "SELECT device_id, sentence, field, value, received_at FROM latest "
+        "WHERE device_id = ? ORDER BY device_id", (device_id,)).fetchall()]
+    pos = conn.execute(
+        "SELECT * FROM positions WHERE device_id = ? ORDER BY received_at DESC LIMIT 1",
+        (device_id,),
+    ).fetchone()
+    return build_vessel(device_id, dev["name"], latest, dict(pos) if pos is not None else None)
+
+
+def self_device(conn: sqlite3.Connection) -> int | None:
+    """Return the device id that Signal K treats as *self*.
+
+    The vessel with the most recent position fix; failing that, the first
+    device that has reported any live values.
+    """
+    row = conn.execute("SELECT device_id FROM positions ORDER BY received_at DESC LIMIT 1").fetchone()
+    if row is not None:
+        return row[0]
+    row = conn.execute("SELECT device_id FROM latest LIMIT 1").fetchone()
+    return row[0] if row is not None else None
 
 
 def build_full_tree(conn: sqlite3.Connection) -> dict[str, Any]:

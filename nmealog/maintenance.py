@@ -35,6 +35,20 @@ def reclaim_space(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
 
 
+def checkpoint_wal(conn: sqlite3.Connection, truncate: bool = False) -> None:
+    """Run a WAL checkpoint.
+
+    *PASSIVE* returns as soon as it would have to wait for a reader or writer,
+    so it never blocks the collector.  *TRUNCATE* (used by reclaim) resets the
+    WAL file so the on-disk size reflects freed pages.
+    """
+    mode = "TRUNCATE" if truncate else "PASSIVE"
+    try:
+        conn.execute(f"PRAGMA wal_checkpoint({mode})").fetchall()
+    except sqlite3.Error as exc:
+        log.warning("wal checkpoint failed: %s", exc)
+
+
 def _delete_chunk(conn: sqlite3.Connection, table: str, where: str = "1=1",
                   params: tuple = (), order: bool = True) -> int:
     if table not in DATA_TABLES:
