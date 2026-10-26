@@ -1,10 +1,11 @@
 """Signal K data model transformation for nmealog.
 
 Maps NMEA sentences to the Signal K resource tree as defined in the
-Signal K specification v1.0.0 (https://signalk.org).
+Signal K specification v1.8.4 (https://signalk.org/specification/1.8.4/doc/).
 
-Only position and heading paths are populated; nmealog does not collect
-environment, propulsion or other marine data.
+Position, GNSS, heading, depth, wind and weather values are populated when
+the device sends the corresponding NMEA 0183 sentences.  All angles are in
+radians, as the specification requires.
 """
 from __future__ import annotations
 
@@ -12,6 +13,8 @@ import math
 import sqlite3
 from datetime import UTC, datetime
 from typing import Any
+
+from .nmea import as_float, sentence_valid
 
 __all__ = [
     "SELF_URN",
@@ -24,8 +27,52 @@ __all__ = [
     "self_device",
 ]
 
-SIGNALK_VERSION = "1.0.0"
+SIGNALK_VERSION = "1.8.4"
 SELF_URN = "urn:mrn:signalk:uuid:nmealog"
+
+# Values of navigation.gnss.methodQuality (Signal K 1.8.4 enum).  GGA quality
+# codes 0-8 index this tuple directly.
+_METHOD_QUALITY = (
+    "no GPS",
+    "GNSS Fix",
+    "DGNSS fix",
+    "Precise GNSS",
+    "RTK fixed integer",
+    "RTK float",
+    "Estimated (DR) mode",
+    "Manual input",
+    "Simulator mode",
+)
+# GNS mode indicators, one per constellation.  The first usable indicator wins.
+_GNS_METHOD_QUALITY = {
+    "A": "GNSS Fix",
+    "D": "DGNSS fix",
+    "P": "Precise GNSS",
+    "R": "RTK fixed integer",
+    "F": "RTK float",
+    "E": "Estimated (DR) mode",
+    "M": "Manual input",
+    "S": "Simulator mode",
+}
+
+
+def _gga_method_quality(value: Any) -> str:
+    quality = int(value)
+    if not 0 <= quality < len(_METHOD_QUALITY):
+        return "Error"
+    return _METHOD_QUALITY[quality]
+
+
+def _gns_method_quality(value: Any) -> str:
+    for ch in str(value).strip().upper():
+        if ch in _GNS_METHOD_QUALITY:
+            return _GNS_METHOD_QUALITY[ch]
+    return "no GPS"
+
+
+def _radians(value: Any) -> float:
+    return math.radians(float(value))
+
 
 # ---------------------------------------------------------------------------
 # NMEA → Signal K field mapping
@@ -36,30 +83,17 @@ SELF_URN = "urn:mrn:signalk:uuid:nmealog"
 #   pgn        – NMEA 2000 PGN number (0 when unknown)
 #   description
 #   converter  – callable to transform the raw string
-#   units      – SI unit string (Signal K standard)
+#   units      – SI unit string (Signal K standard; angles are radians)
+#   keep_invalid – publish even when the sentence reports no valid fix
 
 SignalKMap = dict[str, Any]
 
 _FIELD_MAP: dict[tuple[str, str], SignalKMap] = {
     # --- Position (GGA) ---
-    ("GGA", "lat"): {
-        "ctx": "position",
-        "pgn": 129025,
-        "description": "Position",
-        "units": "deg",
-        "converter": float,
-    },
-    ("GGA", "lon"): {
-        "ctx": "position",
-        "pgn": 129025,
-        "description": "Position",
-        "units": "deg",
-        "converter": float,
-    },
     ("GGA", "altitude"): {
-        "ctx": "position",
-        "pgn": 129025,
-        "description": "Position",
+        "ctx": "gnss.antennaAltitude",
+        "pgn": 129029,
+        "description": "GNSS Antenna Altitude",
         "units": "m",
         "converter": float,
     },
@@ -68,7 +102,8 @@ _FIELD_MAP: dict[tuple[str, str], SignalKMap] = {
         "pgn": 129029,
         "description": "GNSS Method Quality",
         "units": "",
-        "converter": int,
+        "converter": _gga_method_quality,
+        "keep_invalid": True,  # quality 0 is reported as "no GPS"
     },
     ("GGA", "num_sats"): {
         "ctx": "gnss.satellites",
@@ -84,21 +119,52 @@ _FIELD_MAP: dict[tuple[str, str], SignalKMap] = {
         "units": "",
         "converter": float,
     },
+    # --- Position (GNS) ---
+    ("GNS", "altitude"): {
+        "ctx": "gnss.antennaAltitude",
+        "pgn": 129029,
+        "description": "GNSS Antenna Altitude",
+        "units": "m",
+        "converter": float,
+    },
+    ("GNS", "mode_indicator"): {
+        "ctx": "gnss.methodQuality",
+        "pgn": 129029,
+        "description": "GNSS Method Quality",
+        "units": "",
+        "converter": _gns_method_quality,
+        "keep_invalid": True,  # all-N mode is reported as "no GPS"
+    },
+    ("GNS", "num_sats"): {
+        "ctx": "gnss.satellites",
+        "pgn": 129029,
+        "description": "GNSS Satellites",
+        "units": "",
+        "converter": int,
+    },
+    ("GNS", "hdop"): {
+        "ctx": "gnss.horizontalDilution",
+        "pgn": 129029,
+        "description": "GNSS Horizontal Dilution",
+        "units": "",
+        "converter": float,
+    },
+    # --- GNSS dilution (GSA) ---
+    ("GSA", "hdop"): {
+        "ctx": "gnss.horizontalDilution",
+        "pgn": 129029,
+        "description": "GNSS Horizontal Dilution",
+        "units": "",
+        "converter": float,
+    },
+    ("GSA", "pdop"): {
+        "ctx": "gnss.positionDilution",
+        "pgn": 129029,
+        "description": "GNSS Position Dilution",
+        "units": "",
+        "converter": float,
+    },
     # --- Position (RMC) ---
-    ("RMC", "lat"): {
-        "ctx": "position",
-        "pgn": 129025,
-        "description": "Position",
-        "units": "deg",
-        "converter": float,
-    },
-    ("RMC", "lon"): {
-        "ctx": "position",
-        "pgn": 129025,
-        "description": "Position",
-        "units": "deg",
-        "converter": float,
-    },
     ("RMC", "spd_over_grnd"): {
         "ctx": "speedOverGround",
         "pgn": 129026,
@@ -110,31 +176,16 @@ _FIELD_MAP: dict[tuple[str, str], SignalKMap] = {
         "ctx": "courseOverGroundTrue",
         "pgn": 129026,
         "description": "Course Over Ground (True)",
-        "units": "deg",
-        "converter": float,
+        "units": "rad",
+        "converter": _radians,
     },
     # --- Position (GLL) ---
-    ("GLL", "lat"): {
-        "ctx": "position",
-        "pgn": 129025,
-        "description": "Position",
-        "units": "deg",
-        "converter": float,
-    },
-    ("GLL", "lon"): {
-        "ctx": "position",
-        "pgn": 129025,
-        "description": "Position",
-        "units": "deg",
-        "converter": float,
-    },
-    # --- Speed / Course (VTG) ---
     ("VTG", "true_track"): {
         "ctx": "courseOverGroundTrue",
         "pgn": 129026,
         "description": "Course Over Ground (True)",
-        "units": "deg",
-        "converter": float,
+        "units": "rad",
+        "converter": _radians,
     },
     ("VTG", "spd_over_grnd_kts"): {
         "ctx": "speedOverGround",
@@ -148,30 +199,46 @@ _FIELD_MAP: dict[tuple[str, str], SignalKMap] = {
         "ctx": "headingTrue",
         "pgn": 127250,
         "description": "Heading (True)",
-        "units": "deg",
-        "converter": float,
+        "units": "rad",
+        "converter": _radians,
+    },
+    # --- Heading (THS) ---
+    ("THS", "heading"): {
+        "ctx": "headingTrue",
+        "pgn": 127250,
+        "description": "Heading (True)",
+        "units": "rad",
+        "converter": _radians,
+    },
+    # --- Heading (HDM) ---
+    ("HDM", "heading"): {
+        "ctx": "headingMagnetic",
+        "pgn": 127250,
+        "description": "Heading (Magnetic)",
+        "units": "rad",
+        "converter": _radians,
     },
     # --- Heading (HDG) ---
     ("HDG", "heading"): {
         "ctx": "headingMagnetic",
         "pgn": 127250,
         "description": "Heading (Magnetic)",
-        "units": "deg",
-        "converter": float,
+        "units": "rad",
+        "converter": _radians,
     },
     ("HDG", "deviation"): {
-        "ctx": "deviation",
+        "ctx": "magneticDeviation",
         "pgn": 127250,
         "description": "Magnetic Deviation",
-        "units": "deg",
-        "converter": float,
+        "units": "rad",
+        "converter": _radians,
     },
     ("HDG", "variation"): {
-        "ctx": "variation",
+        "ctx": "magneticVariation",
         "pgn": 127250,
         "description": "Magnetic Variation",
-        "units": "deg",
-        "converter": float,
+        "units": "rad",
+        "converter": _radians,
     },
     # --- Rate of Turn (ROT) ---
     ("ROT", "rate_of_turn"): {
@@ -180,6 +247,85 @@ _FIELD_MAP: dict[tuple[str, str], SignalKMap] = {
         "description": "Rate of Turn",
         "units": "rad/s",
         "converter": lambda v: float(v) * math.pi / 180 / 60,  # deg/min → rad/s
+    },
+    # --- Depth (DBT, DPT) ---
+    ("DBT", "depth_meters"): {
+        "ctx": "environment.depth.belowTransducer",
+        "pgn": 128267,
+        "description": "Depth Below Transducer",
+        "units": "m",
+        "converter": float,
+    },
+    ("DPT", "depth"): {
+        "ctx": "environment.depth.belowTransducer",
+        "pgn": 128267,
+        "description": "Depth Below Transducer",
+        "units": "m",
+        "converter": float,
+    },
+    # --- Weather and wind (MDA) ---
+    ("MDA", "b_pressure_bar"): {
+        "ctx": "environment.outside.pressure",
+        "pgn": 130314,
+        "description": "Outside Pressure",
+        "units": "Pa",
+        "converter": lambda v: float(v) * 100000.0,  # bar → Pa
+    },
+    ("MDA", "air_temp"): {
+        "ctx": "environment.outside.temperature",
+        "pgn": 130316,
+        "description": "Outside Temperature",
+        "units": "K",
+        "converter": lambda v: float(v) + 273.15,  # °C → K
+    },
+    ("MDA", "water_temp"): {
+        "ctx": "environment.water.temperature",
+        "pgn": 130312,
+        "description": "Water Temperature",
+        "units": "K",
+        "converter": lambda v: float(v) + 273.15,  # °C → K
+    },
+    ("MDA", "rel_humidity"): {
+        "ctx": "environment.outside.relativeHumidity",
+        "pgn": 130313,
+        "description": "Outside Relative Humidity",
+        "units": "",
+        "converter": lambda v: float(v) / 100.0,  # percent → ratio
+    },
+    ("MDA", "dew_point"): {
+        "ctx": "environment.outside.dewPointTemperature",
+        "pgn": 130316,
+        "description": "Outside Dew Point Temperature",
+        "units": "K",
+        "converter": lambda v: float(v) + 273.15,  # °C → K
+    },
+    ("MDA", "direction_true"): {
+        "ctx": "environment.wind.directionTrue",
+        "pgn": 130306,
+        "description": "Wind Direction (True)",
+        "units": "rad",
+        "converter": _radians,
+    },
+    ("MDA", "direction_magnetic"): {
+        "ctx": "environment.wind.directionMagnetic",
+        "pgn": 130306,
+        "description": "Wind Direction (Magnetic)",
+        "units": "rad",
+        "converter": _radians,
+    },
+    ("MDA", "wind_speed_knots"): {
+        "ctx": "environment.wind.speedTrue",
+        "pgn": 130306,
+        "description": "Wind Speed (True)",
+        "units": "m/s",
+        "converter": lambda v: float(v) * 0.514444,
+    },
+    ("MDA", "wind_speed_meters"): {
+        "ctx": "environment.wind.speedTrue",
+        "pgn": 130306,
+        "description": "Wind Speed (True)",
+        "units": "m/s",
+        "converter": float,
     },
 }
 
@@ -233,6 +379,83 @@ def _get_path(root: dict[str, Any], dotted: str) -> Any:
         if target is None:
             return None
     return target
+
+
+def _sensor_node(
+    value: Any,
+    received_at: float,
+    source_label: str,
+    pgn: int,
+    description: str,
+    units: str,
+) -> dict[str, Any]:
+    return {
+        "value": value,
+        "$source": source_label,
+        "timestamp": iso_time(received_at),
+        "pgn": pgn,
+        "description": description,
+        "units": units,
+    }
+
+
+# MWV carries its reference and speed units in separate fields, so it cannot be
+# represented by the one-field _FIELD_MAP table.
+_MWV_REFERENCE_PATHS = {
+    "R": ("angleApparent", "speedApparent"),
+    "T": ("angleTrueWater", "speedTrue"),
+}
+_WIND_SPEED_TO_MS = {"N": 0.514444, "M": 1.0, "K": 1000.0 / 3600.0, "S": 0.44704}
+
+
+def _bow_angle_radians(degrees: float) -> float:
+    """Wind angles relative to the bow are signed: negative to port, positive to starboard."""
+    return math.radians((degrees + 180.0) % 360.0 - 180.0)
+
+
+def _apply_mwv(
+    navigation: dict[str, Any],
+    latest: list[dict[str, Any]],
+    device_id: int,
+    source_label: str,
+) -> None:
+    """Add apparent/true wind from an MWV sentence, honouring its reference and units."""
+    rows = {
+        row["field"]: row for row in latest
+        if row["device_id"] == device_id and row["sentence"] == "MWV"
+    }
+    if not rows:
+        return
+    status = rows.get("status")
+    if status is not None and str(status["value"]).strip().upper() != "A":
+        return
+    reference = rows.get("reference")
+    paths = _MWV_REFERENCE_PATHS.get(str(reference["value"]).strip().upper()) if reference else None
+    if paths is None:
+        return
+    angle_path, speed_path = paths
+
+    angle = rows.get("wind_angle")
+    if angle is not None:
+        value = as_float(angle["value"])
+        if value is not None:
+            _set_path(
+                navigation, f"environment.wind.{angle_path}",
+                _sensor_node(_bow_angle_radians(value), angle["received_at"], source_label, 130306,
+                             "Wind Angle", "rad"),
+            )
+
+    speed = rows.get("wind_speed")
+    units = rows.get("wind_speed_units")
+    if speed is not None and units is not None:
+        factor = _WIND_SPEED_TO_MS.get(str(units["value"]).strip().upper())
+        value = as_float(speed["value"])
+        if factor is not None and value is not None:
+            _set_path(
+                navigation, f"environment.wind.{speed_path}",
+                _sensor_node(value * factor, speed["received_at"], source_label, 130306,
+                             "Wind Speed", "m/s"),
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -316,15 +539,24 @@ def build_vessel(
         )
 
     # --- map each live value ---
-    # We collect fields by context to group them
-    ctx_values: dict[str, dict[str, Any]] = {}  # ctx → {"field": value, "ts": epoch}
+    # Keep the newest value for each context.  Position comes from the positions table above.
+    ctx_values: dict[str, Any] = {}
     ctx_timestamps: dict[str, float] = {}
+    ctx_best_at: dict[str, float] = {}
 
-    for row in latest:
-        if row["device_id"] != device_id:
-            continue
+    # A sentence's own status fields (RMC status, ROT status, ...) decide whether
+    # its data may be published.  Entries flagged keep_invalid still report "no fix".
+    device_rows = [row for row in latest if row["device_id"] == device_id]
+    by_sentence: dict[str, dict[str, str]] = {}
+    for row in device_rows:
+        by_sentence.setdefault(row["sentence"], {})[row["field"]] = row["value"]
+    valid_sentences = {name for name, fields in by_sentence.items() if sentence_valid(name, fields)}
+
+    for row in device_rows:
         mapping = _FIELD_MAP.get((row["sentence"], row["field"]))
         if mapping is None:
+            continue
+        if row["sentence"] not in valid_sentences and not mapping.get("keep_invalid"):
             continue
         ctx = mapping["ctx"]
         try:
@@ -332,19 +564,10 @@ def build_vessel(
         except (ValueError, TypeError):
             continue
         ts = row["received_at"]
-        if ctx == "position":
-            # position fields go into the value sub-object
-            if ctx not in ctx_values:
-                ctx_values[ctx] = {}
-                ctx_timestamps[ctx] = 0
-            ctx_values[ctx][row["field"]] = converted
-            ctx_timestamps[ctx] = max(ctx_timestamps[ctx], ts)
-        else:
-            if ctx not in ctx_values:
-                ctx_values[ctx] = {}
-                ctx_timestamps[ctx] = 0
-            ctx_values[ctx]["value"] = converted
-            ctx_timestamps[ctx] = max(ctx_timestamps[ctx], ts)
+        if ctx not in ctx_best_at or ts >= ctx_best_at[ctx]:
+            ctx_values[ctx] = converted
+            ctx_best_at[ctx] = ts
+        ctx_timestamps[ctx] = max(ctx_timestamps.get(ctx, 0.0), ts)
 
     # Write the collected values into the navigation tree
     for ctx, data in ctx_values.items():
@@ -352,17 +575,7 @@ def build_vessel(
         current = navigation
         for part in parts:
             current = current.setdefault(part, {})
-        if ctx == "position" and "value" not in current:
-            # Build position.value from the collected fields.
-            # Map NMEA field names (lat, lon) to Signal K names (latitude, longitude).
-            pos_value = {}
-            for nmea_fld, sk_fld in (("lat", "latitude"), ("lon", "longitude"), ("altitude", "altitude")):
-                if nmea_fld in data:
-                    pos_value[sk_fld] = data[nmea_fld]
-            if pos_value:
-                current["value"] = pos_value
-        elif ctx != "position":
-            current["value"] = data["value"]
+        current["value"] = data
 
         # Add metadata if this container is fresh
         mapping_for_ctx = _FIELD_MAP.get(
@@ -377,6 +590,8 @@ def build_vessel(
             current["pgn"] = mapping_for_ctx["pgn"]
             current["description"] = mapping_for_ctx["description"]
             current["units"] = mapping_for_ctx["units"]
+
+    _apply_mwv(navigation, latest, device_id, source_label)
 
     return navigation
 

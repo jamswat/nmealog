@@ -3,12 +3,27 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import pynmea2
 
 _HEX2 = re.compile(r"[0-9A-Fa-f]{2}")
+
+# pynmea2 1.19.0 has no THS class, but the two data fields are well known.
+_NAMED_FALLBACK_FIELDS: dict[str, tuple[str, ...]] = {
+    "THS": ("heading", "mode_indicator"),
+}
+
+# Heading sentences whose value is followed by an E/W letter.  West is negative.
+_DIRECTION_FIELDS: dict[tuple[str, str], str] = {
+    ("HDG", "deviation"): "dev_dir",
+    ("HDG", "variation"): "var_dir",
+}
+
+# GNS mode characters that mean a usable fix (N = no fix, S = simulator).
+_FIX_MODES = "ADPRFEM"
 
 
 @dataclass
@@ -57,8 +72,64 @@ def _header_names(header: str) -> tuple[str, str]:
 def _generic(body: str) -> tuple[str, str, dict[str, str]]:
     parts = body.split(",")
     talker, sentence = _header_names(parts[0])
-    fields = {f"field_{i}": v for i, v in enumerate(parts[1:]) if v != ""}
+    names = _NAMED_FALLBACK_FIELDS.get(sentence)
+    fields: dict[str, str] = {}
+    for i, value in enumerate(parts[1:]):
+        if value == "":
+            continue
+        key = names[i] if names and i < len(names) else f"field_{i}"
+        fields[key] = value
     return talker, sentence, fields
+
+
+def as_float(value) -> float | None:
+    """Parse a numeric NMEA field; None for empty, malformed, or non-finite values."""
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _as_int(value) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _flag(fields: Mapping[str, str], key: str) -> str | None:
+    value = fields.get(key)
+    return None if value is None else str(value).strip().upper()
+
+
+def sentence_valid(sentence: str, fields: Mapping[str, str]) -> bool:
+    """Return False when the sentence's own status field says its data must not be used.
+
+    A missing field is not treated as invalid, so partial sentences still count.
+    """
+    if sentence == "GGA":
+        quality = _as_int(fields.get("gps_qual"))
+        return quality is None or quality > 0
+    if sentence == "GNS":
+        mode = _flag(fields, "mode_indicator")
+        return mode is None or any(ch in _FIX_MODES for ch in mode)
+    if sentence == "GLL":
+        return _flag(fields, "status") in (None, "A") and _flag(fields, "faa_mode") != "N"
+    if sentence == "RMC":
+        mode = _flag(fields, "mode_indicator")
+        return _flag(fields, "status") in (None, "A") and mode in (None, "A", "D")
+    if sentence == "VTG":
+        return _flag(fields, "faa_mode") != "N"
+    if sentence == "ROT":
+        return _flag(fields, "status") in (None, "A")
+    if sentence == "THS":
+        return _flag(fields, "mode_indicator") != "V"
+    return True
 
 
 def _typed(text: str):
@@ -76,6 +147,10 @@ def _typed_fields(msg) -> dict[str, str]:
         if value == "":
             continue
         fields[names[i] if i < len(names) else f"field_{i}"] = value
+    for (sentence, field), direction in _DIRECTION_FIELDS.items():
+        if (sentence == msg.sentence_type and field in fields and _flag(fields, direction) == "W"
+                and not fields[field].startswith("-")):
+            fields[field] = "-" + fields[field]
     return fields
 
 
@@ -88,8 +163,19 @@ def _position(msg) -> Position | None:
                 return None
             return Position(
                 msg.latitude, msg.longitude, "GGA", fix_quality=quality,
-                satellites=int(msg.num_sats) if msg.num_sats else None,
-                hdop=float(msg.horizontal_dil) if msg.horizontal_dil else None,
+                satellites=_as_int(msg.num_sats),
+                hdop=as_float(msg.horizontal_dil),
+            )
+        if st == "GNS":
+            # GNS carries one mode indicator per constellation: GPS, GLONASS,
+            # Galileo and BeiDou.  A single non-N indicator is a usable fix.
+            mode = str(msg.mode_indicator or "").strip().upper()
+            if not any(ch in _FIX_MODES for ch in mode):
+                return None
+            return Position(
+                msg.latitude, msg.longitude, "GNS",
+                satellites=_as_int(msg.num_sats),
+                hdop=as_float(msg.hdop),
             )
         if st == "GLL":
             if msg.status != "A":
@@ -100,10 +186,10 @@ def _position(msg) -> Position | None:
                 return None
             return Position(
                 msg.latitude, msg.longitude, "RMC",
-                speed_kn=float(msg.spd_over_grnd) if msg.spd_over_grnd else None,
-                course_true=float(msg.true_course) if msg.true_course else None,
+                speed_kn=as_float(msg.spd_over_grnd),
+                course_true=as_float(msg.true_course),
             )
-    except Exception:  # noqa: BLE001  # pynmea2 message attributes vary by sentence type; getattr or conversion can fail
+    except (AttributeError, TypeError, ValueError):
         return None
     return None
 
@@ -150,12 +236,14 @@ def parse_line(line: str) -> Parsed:
 
     msg = _typed(text) if text[0] == "$" else None
     if msg is not None:
+        fields = _typed_fields(msg)
+        position = _position(msg) if sentence_valid(msg.sentence_type, fields) else None
         return Parsed(
             msg.talker,
             msg.sentence_type,
             checksum_ok,
-            _typed_fields(msg),
-            _valid_position(_position(msg)),
+            fields,
+            _valid_position(position),
             _gps_time(msg),
         )
     talker, sentence, fields = _generic(body)

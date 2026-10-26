@@ -6,10 +6,18 @@ import time
 import pytest
 
 from nmealog import settings
-from nmealog.collector import Collector, DeviceWorker
+from nmealog.collector import (
+    COMBINED_DOP_MAX_AGE_S,
+    SKY_MAX_AGE_S,
+    SPEED_COURSE_MAX_AGE_S,
+    Collector,
+    DeviceSpec,
+    DeviceWorker,
+    Shared,
+)
 from nmealog.config import Config
 from nmealog.db import connect, init_db
-from nmealog.simulator import Simulator, serve
+from nmealog.simulator import Simulator, sentence, serve
 
 
 def _wait(predicate, timeout=15.0):
@@ -102,6 +110,97 @@ def test_collects_parses_and_stores(sim_server, cfg):
     finally:
         stop.set()
         t.join(timeout=15)
+
+
+def _bare_worker(tmp_path):
+    """A worker that is not started; enough to exercise _handle_line directly."""
+    shared = Shared(settings.defaults())
+    return DeviceWorker(DeviceSpec(1, "unit", "127.0.0.1", 1), tmp_path / "unused.sqlite3", shared)
+
+
+def test_vtg_enriches_a_position_without_speed(tmp_path):
+    worker = _bare_worker(tmp_path)
+    worker._handle_line(sentence("GPVTG,107.3,T,108.1,M,7.039,N,13.036,K,D").encode())
+    worker._handle_line(sentence("GPGLL,5331.7091,N,00308.2345,W,163112.00,A,D").encode())
+    assert len(worker.pending_positions) == 1
+    row = worker.pending_positions[0]
+    assert row[4] == "GLL"
+    assert row[6] == pytest.approx(7.039)
+    assert row[7] == pytest.approx(107.3)
+
+
+def test_stale_vtg_does_not_enrich_a_position(tmp_path):
+    worker = _bare_worker(tmp_path)
+    worker._handle_line(sentence("GPVTG,107.3,T,108.1,M,7.039,N,13.036,K,D").encode())
+    worker._motion_at -= SPEED_COURSE_MAX_AGE_S + 1
+    worker._handle_line(sentence("GPGLL,5331.7091,N,00308.2345,W,163112.00,A,D").encode())
+    row = worker.pending_positions[0]
+    assert row[6] is None
+    assert row[7] is None
+
+
+def test_invalid_vtg_does_not_enrich_a_position(tmp_path):
+    worker = _bare_worker(tmp_path)
+    worker._handle_line(sentence("GPVTG,107.3,T,108.1,M,7.039,N,13.036,K,N").encode())
+    worker._handle_line(sentence("GPGLL,5331.7091,N,00308.2345,W,163112.00,A,D").encode())
+    row = worker.pending_positions[0]
+    assert row[6] is None
+    assert row[7] is None
+
+
+def test_rmc_keeps_its_own_speed_when_vtg_differs(tmp_path):
+    worker = _bare_worker(tmp_path)
+    worker._handle_line(sentence("GPVTG,107.3,T,108.1,M,7.039,N,13.036,K,D").encode())
+    worker._handle_line(sentence(
+        "GPRMC,163113.00,A,5331.7087,N,00308.2314,W,5.0,108.1,261026,0.8,W,D"
+    ).encode())
+    row = worker.pending_positions[0]
+    assert row[4] == "RMC"
+    assert row[6] == pytest.approx(5.0)
+
+
+def test_satellites_in_view_are_summed_across_talkers(tmp_path):
+    worker = _bare_worker(tmp_path)
+    worker._handle_line(sentence("GPGSV,1,1,08,01,40,083,46").encode())
+    worker._handle_line(sentence("GLGSV,1,1,05,65,20,100,40").encode())
+    assert worker.pending_latest[("GSV", "num_sv_in_view")][0] == "13"
+
+
+def test_satellites_in_view_from_a_silent_talker_expires(tmp_path):
+    worker = _bare_worker(tmp_path)
+    worker._handle_line(sentence("GPGSV,1,1,08,01,40,083,46").encode())
+    worker._handle_line(sentence("GLGSV,1,1,05,65,20,100,40").encode())
+    talker_count, at = worker._gsv_counts["GL"]
+    worker._gsv_counts["GL"] = (talker_count, at - SKY_MAX_AGE_S - 1)
+    worker._handle_line(sentence("GPGSV,1,1,08,01,40,083,46").encode())
+    assert worker.pending_latest[("GSV", "num_sv_in_view")][0] == "8"
+
+
+def test_combined_gn_dop_takes_priority_over_constellation_dop(tmp_path):
+    worker = _bare_worker(tmp_path)
+    worker._handle_line(sentence("GNGSA,A,3,04,05,,09,12,,,24,,,,,2.5,1.3,2.1").encode())
+    worker._handle_line(sentence("GPGSA,A,3,04,05,,09,12,,,24,,,,,9.9,8.8,7.7").encode())
+    assert worker.pending_latest[("GSA", "hdop")][0] == "1.3"
+    assert worker.pending_latest[("GSA", "pdop")][0] == "2.5"
+
+
+def test_constellation_dop_is_used_when_no_fresh_gn_dop(tmp_path):
+    worker = _bare_worker(tmp_path)
+    worker._handle_line(sentence("GNGSA,A,3,04,05,,09,12,,,24,,,,,2.5,1.3,2.1").encode())
+    worker._combined_dop_at -= COMBINED_DOP_MAX_AGE_S + 1
+    worker._handle_line(sentence("GPGSA,A,3,04,05,,09,12,,,24,,,,,9.9,8.8,7.7").encode())
+    assert worker.pending_latest[("GSA", "hdop")][0] == "8.8"
+
+
+def test_gns_position_reaches_the_pending_position_batch(tmp_path):
+    worker = _bare_worker(tmp_path)
+    worker._handle_line(sentence(
+        "GNGNS,122310.00,3722.5581,N,12202.2199,W,ANNN,08,1.0,11.0,10.0,,"
+    ).encode())
+    assert len(worker.pending_positions) == 1
+    row = worker.pending_positions[0]
+    assert row[4] == "GNS"
+    assert row[8] == 8
 
 
 def test_disabled_device_gets_no_worker(sim_server, cfg):

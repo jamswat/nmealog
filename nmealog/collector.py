@@ -18,7 +18,7 @@ from . import maintenance
 from . import settings as app_settings
 from .config import Config
 from .db import connect, get_meta, init_db, log_action, set_meta, transaction
-from .nmea import Parsed, parse_line
+from .nmea import Parsed, as_float, parse_line, sentence_valid
 from .relay import NmeaRelay
 
 log = logging.getLogger("nmealog.collector")
@@ -34,6 +34,10 @@ WAL_CHECKPOINT_INTERVAL_S = 60.0
 WAL_CHECKPOINT_MIN_BYTES = 32 * 1024 * 1024
 PERF_WINDOW_S = 60.0  # sliding window for the throughput rates on the Maintenance page
 PERF_FLUSH_HISTORY = 100
+SPEED_COURSE_MAX_AGE_S = 10.0  # VTG/RMC speed may enrich a position sentence without speed
+COMBINED_DOP_MAX_AGE_S = 10.0  # GN GSA DOP overrides per-constellation GSA DOP while it is fresh
+SKY_MAX_AGE_S = 30.0  # a talker's GSV satellites-in-view count expires after this
+_GSA_DOP_FIELDS = ("pdop", "hdop", "vdop")
 
 
 @dataclass(frozen=True)
@@ -256,7 +260,18 @@ class DeviceWorker(threading.Thread):
         self.conn: sqlite3.Connection | None = None
         self._last_flush = 0.0
         self._last_position_at = 0.0
+        self._reset_motion()
+        self._reset_sky()
         self._reset_pending()
+
+    def _reset_motion(self) -> None:
+        self._motion_speed_kn: float | None = None
+        self._motion_course_true: float | None = None
+        self._motion_at = 0.0
+
+    def _reset_sky(self) -> None:
+        self._gsv_counts: dict[str, tuple[int, float]] = {}  # talker → (satellites in view, at)
+        self._combined_dop_at = 0.0
 
     def _reset_pending(self) -> None:
         self.pending_sentences: list[tuple] = []
@@ -306,6 +321,8 @@ class DeviceWorker(threading.Thread):
                 continue
 
             delay = 1.0
+            self._reset_motion()
+            self._reset_sky()
             log.info("%s: connected to %s:%s", spec.name, spec.host, spec.port)
             self._status(state="connected", connected_at=time.time(), last_error=None)
             reason = self._read(sock)
@@ -377,8 +394,16 @@ class DeviceWorker(threading.Thread):
             self.gps_time = parsed.gps_time
             self.clock_offset = now - parsed.gps_time
 
+        self._update_motion(parsed, now)
+
         for field, value in parsed.fields.items():
+            if parsed.sentence == "GSA" and field in _GSA_DOP_FIELDS and not self._take_gsa_dop(parsed.talker, now):
+                continue
+            if parsed.sentence == "GSV" and field == "num_sv_in_view":
+                continue
             self.pending_latest[(parsed.sentence, field)] = (value, now)
+        if parsed.sentence == "GSV":
+            self._update_satellites_in_view(parsed.talker, parsed.fields.get("num_sv_in_view"), now)
 
         if store and settings["store_sentences"]:
             self._queue_sentence(now, parsed, text)
@@ -386,10 +411,61 @@ class DeviceWorker(threading.Thread):
         pos = parsed.position
         if store and pos is not None and now - self._last_position_at >= settings["position_interval_s"]:
             self._last_position_at = now
+            speed_kn, course_true = self._position_motion(pos, now)
             self.pending_positions.append((
                 self.spec.id, now, pos.latitude, pos.longitude, pos.source,
-                pos.fix_quality, pos.speed_kn, pos.course_true, pos.satellites, pos.hdop,
+                pos.fix_quality, speed_kn, course_true, pos.satellites, pos.hdop,
             ))
+
+    def _update_motion(self, parsed: Parsed, now: float) -> None:
+        """Remember the latest speed and course for position sentences without them."""
+        sentence = parsed.sentence
+        if sentence not in ("VTG", "RMC") or not sentence_valid(sentence, parsed.fields):
+            return
+        if sentence == "VTG":
+            speed = as_float(parsed.fields.get("spd_over_grnd_kts"))
+            if speed is None:
+                kmph = as_float(parsed.fields.get("spd_over_grnd_kmph"))
+                speed = kmph / 1.852 if kmph is not None else None
+            course = as_float(parsed.fields.get("true_track"))
+        else:
+            speed = as_float(parsed.fields.get("spd_over_grnd"))
+            course = as_float(parsed.fields.get("true_course"))
+        if speed is None and course is None:
+            return
+        if speed is not None:
+            self._motion_speed_kn = speed
+        if course is not None:
+            self._motion_course_true = course
+        self._motion_at = now
+
+    def _take_gsa_dop(self, talker: str, now: float) -> bool:
+        """Return whether a GSA's DOP values should be stored.
+
+        A GN (combined) GSA describes the position solution, so it takes priority
+        over per-constellation GSA sentences while it is fresh.
+        """
+        if talker == "GN":
+            self._combined_dop_at = now
+            return True
+        return now - self._combined_dop_at > COMBINED_DOP_MAX_AGE_S
+
+    def _update_satellites_in_view(self, talker: str, count: str | None, now: float) -> None:
+        """Store the satellites in view summed over all GSV talkers (GP, GL, GA, GB, ...)."""
+        value = as_float(count)
+        if value is not None:
+            self._gsv_counts[talker] = (int(value), now)
+        self._gsv_counts = {t: v for t, v in self._gsv_counts.items() if now - v[1] <= SKY_MAX_AGE_S}
+        total = sum(c for c, _ in self._gsv_counts.values())
+        self.pending_latest[("GSV", "num_sv_in_view")] = (str(total), now)
+
+    def _position_motion(self, pos, now: float) -> tuple[float | None, float | None]:
+        """Fill missing position speed/course from a fresh VTG or RMC sentence."""
+        if not self._motion_at or now - self._motion_at > SPEED_COURSE_MAX_AGE_S:
+            return pos.speed_kn, pos.course_true
+        speed = pos.speed_kn if pos.speed_kn is not None else self._motion_speed_kn
+        course = pos.course_true if pos.course_true is not None else self._motion_course_true
+        return speed, course
 
     def _queue_sentence(self, now: float, parsed: Parsed, text: str) -> None:
         checksum = None if parsed.checksum_ok is None else int(parsed.checksum_ok)

@@ -10,6 +10,7 @@ from werkzeug.security import generate_password_hash
 
 from nmealog.config import Config
 from nmealog.db import connect
+from nmealog.signalk import SIGNALK_VERSION
 from nmealog.web import create_app
 
 PASSWORD = "correct horse"
@@ -108,7 +109,7 @@ class TestSignalK:
         assert resp.status_code == 200
         assert resp.mimetype == "application/vnd.signalk+json"
         data = resp.get_json()
-        assert data["version"] == "1.0.0"
+        assert data["version"] == SIGNALK_VERSION
         assert data["server"]["id"] == "nmealog"
         assert "endpoints" in data
 
@@ -116,7 +117,7 @@ class TestSignalK:
         resp = client.get("/signalk/v1/api/vessels/")
         assert resp.status_code == 200
         data = resp.get_json()
-        assert data["version"] == "1.0.0"
+        assert data["version"] == SIGNALK_VERSION
         assert "vessels" in data
         assert "self" in data["vessels"]
 

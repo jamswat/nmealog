@@ -4,7 +4,7 @@ nmealog exposes three read-only JSON APIs:
 
 | # | Endpoint | Format | Purpose |
 |---|----------|--------|---------|
-| 1 | `/signalk/v1/api/` | [Signal K](https://signalk.org) v1.0.0 | Position + heading in the standard marine resource tree |
+| 1 | `/signalk/v1/api/` | [Signal K](https://signalk.org/specification/1.8.4/doc/) v1.8.4 | Position, GNSS, heading, depth, wind and weather in the standard marine resource tree |
 | 2 | `/api/v1/positions` / `.geojson` | JSON + GeoJSON (RFC 7946) | Position history as points or a FeatureCollection |
 | 3 | `/api/v1/current` | Simple JSON | Latest position + live values per device |
 
@@ -49,22 +49,41 @@ device.
 
 | NMEA source | Signal K path | Units |
 |-------------|---------------|-------|
-| GGA / RMC / GLL | `navigation.position.value.latitude` | deg |
-| GGA / RMC / GLL | `navigation.position.value.longitude` | deg |
-| GGA | `navigation.position.value.altitude` | m |
+| GGA / GNS / RMC / GLL | `navigation.position.value` (latitude, longitude) | deg |
+| GGA / GNS | `navigation.gnss.antennaAltitude.value` | m |
 | VTG / RMC | `navigation.speedOverGround.value` | m/s |
-| VTG / RMC | `navigation.courseOverGroundTrue.value` | deg |
-| GGA | `navigation.gnss.methodQuality.value` | 0‑4 |
-| GGA | `navigation.gnss.satellites.value` | count |
-| GGA | `navigation.gnss.horizontalDilution.value` | — |
-| HDT | `navigation.headingTrue.value` | deg |
-| HDG | `navigation.headingMagnetic.value` | deg |
-| HDG | `navigation.deviation.value` | deg |
-| HDG | `navigation.variation.value` | deg |
+| VTG / RMC | `navigation.courseOverGroundTrue.value` | rad |
+| GGA / GNS | `navigation.gnss.methodQuality.value` | enum (see below) |
+| GGA / GNS | `navigation.gnss.satellites.value` | count |
+| GGA / GNS / GSA | `navigation.gnss.horizontalDilution.value` | — |
+| GSA | `navigation.gnss.positionDilution.value` | — |
+| HDT / THS | `navigation.headingTrue.value` | rad |
+| HDG / HDM | `navigation.headingMagnetic.value` | rad |
+| HDG | `navigation.magneticDeviation.value` | rad |
+| HDG | `navigation.magneticVariation.value` | rad |
 | ROT | `navigation.rateOfTurn.value` | rad/s |
+| DBT / DPT | `environment.depth.belowTransducer.value` | m |
+| MDA | `environment.outside.pressure.value` | Pa |
+| MDA | `environment.outside.temperature.value` | K |
+| MDA | `environment.water.temperature.value` | K |
+| MDA | `environment.outside.relativeHumidity.value` | ratio |
+| MDA | `environment.outside.dewPointTemperature.value` | K |
+| MDA | `environment.wind.directionTrue.value` / `directionMagnetic` | rad |
+| MDA | `environment.wind.speedTrue.value` | m/s |
+| MWV (`R`) | `environment.wind.angleApparent.value` / `speedApparent` | rad / m/s |
+| MWV (`T`) | `environment.wind.angleTrueWater.value` / `speedTrue` | rad / m/s |
 
 Each leaf node includes `$source`, `timestamp` (ISO 8601), `pgn` and
 `description`.
+
+Notes on how values are chosen:
+
+- **Units.** All angles are radians and all speeds metres per second, as Signal K requires. Relative wind angles (`angleApparent`, `angleTrueWater`) are signed: negative to port, positive to starboard. HDG variation and deviation are signed too: East is positive and West is negative.
+- **Position** comes from the positions table, which only stores fixes that pass validation. Raw NMEA latitude and longitude are never published, because they are in degrees and minutes.
+- **`methodQuality`** uses the Signal K enum: `no GPS`, `GNSS Fix`, `DGNSS fix`, `Precise GNSS`, `RTK fixed integer`, `RTK float`, `Estimated (DR) mode`, `Manual input`, `Simulator mode`, `Error`.
+- **Status flags.** A sentence's own status is respected. Data from an RMC with status `V` or a mode other than `A`/`D`, a VTG with mode `N`, a ROT with status `V`, or a THS with status `V` is not published. A GNS or GGA with no fix still reports `methodQuality` as `no GPS`.
+- **Satellites in view** (GSV) are not part of the Signal K tree, because the specification has no path for them. The count, summed across all talkers (`GP`, `GL`, `GA`, `GB`, ...), is available as a live value in `/api/v1/current`.
+- **GSA dilution** uses the combined `GN` solution when one is current, and the per-constellation sentence otherwise.
 
 ### Example
 
@@ -167,7 +186,7 @@ curl http://nmealog-host:8090/api/v1/current
 ```json
 {
   "server": {
-    "version": "1.0.0",
+    "version": "1.2.0",
     "time": "2024-10-27T12:00:00.000Z",
     "collectorAlive": true
   },

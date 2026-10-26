@@ -24,8 +24,9 @@ Each device thread:
 - reads bytes with a 1-second timeout, so it can notice shutdown and idle time;
 - splits lines on `\n`, drops any line over 512 bytes (NMEA sentences are at most 82 characters);
 - validates the checksum; a bad checksum is counted and not used for positions or live values;
-- parses with pynmea2 for known talker sentences, and falls back to generic field names (`field_0`, ...) for anything else, including proprietary `$P...` and AIS `!...` sentences;
-- takes a position only from a valid fix (GGA quality > 0, RMC or GLL status A), rejects latitude and longitude out of range, and rejects exactly 0,0;
+- parses with pynmea2 for known talker sentences, and falls back to generic field names (`field_0`, ...) for anything else, including proprietary `$P...` and AIS `!...` sentences (THS uses named fallback fields);
+- takes a position only from a valid fix (GGA quality > 0, GNS mode indicator not N, RMC or GLL status A), rejects latitude and longitude out of range, and rejects exactly 0,0;
+- fills a missing position speed/course from a fresh VTG or RMC sentence (up to 10 seconds old);
 - writes in batches in one transaction every second, to limit fsyncs. If a write fails, the batch is kept (up to 20 000 rows) and retried, and the error appears on the status page.
 
 Reconnection uses exponential backoff from 1 s up to 60 s. A device that sends nothing for `idle_timeout_s` is reconnected. A device that closes the connection is reconnected after 1 s.

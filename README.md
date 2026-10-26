@@ -5,7 +5,7 @@ Records NMEA 0183 data from serial-to-TCP server into SQLite, shows it in a web 
 
 ## Features
 
-- **Collection:** one persistent connection per device, with reconnect and backoff. Checksums are checked. Known sentences are parsed in full (GGA, RMC, GLL, VTG, GSA, GSV, ZDA, HDT, HDG, ROT, DBT, MWV, DTM and more); unknown and proprietary sentences are kept with generic field names.
+- **Collection:** one persistent connection per device, with reconnect and backoff. Checksums are checked. Known sentences are parsed in full (GGA, GNS, RMC, GLL, VTG, GSA, GSV, ZDA, HDT, THS, HDG, HDM, ROT, DBT, DPT, MWV, MDA, DTM and more); unknown and proprietary sentences are kept with generic field names.
 - **Storage:** every sentence with its parsed fields, positions from valid fixes at a set interval, and the latest value of every field per device.
 - **Retention and size cap:** delete data older than N days, and keep the database under N MB by removing the oldest data first.
 - **Web UI:** status, track table, [map](docs/operations.md) (OpenStreetMap), sentence browser, device management with a connection test, settings, maintenance.
