@@ -1,6 +1,6 @@
 # nmealog
 
-Records NMEA 0183 data from serial-to-TCP server into SQLite, shows it in a web interface, and can re-serve a chosen GPS to the local network. (supports Signal K, GeoJSON, and a basic live location JSON api)
+Records NMEA 0183 data from serial-to-TCP server into SQLite, shows it in a web interface, and can re-serve a chosen GPS to the local network. (supports Signal K (beta!!!), GeoJSON, and a basic live location JSON api)
 
 ## Features
 
@@ -30,7 +30,7 @@ docker compose build
 docker compose up -d
 ```
 
-Open `http://127.0.0.1:8090` (or put nginx in front; see [operations](docs/operations.md#nginx)).
+Open `http://127.0.0.1:8090` (or put nginx, or your reverse proxy of choice in front; see [operations](docs/operations.md#nginx)).
 
 On first load you will be prompted to create an administrator username and password. Once set, you will need to sign in with those credentials on every visit.
 

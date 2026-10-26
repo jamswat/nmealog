@@ -15,7 +15,7 @@ import socket
 import sqlite3
 import time
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from email.utils import formatdate, parsedate_to_datetime
 from pathlib import Path
 from typing import Any
@@ -23,12 +23,28 @@ from zoneinfo import ZoneInfo
 
 log = logging.getLogger("nmealog.web")
 
-from flask import (Flask, Response, abort, flash, g, redirect, render_template, request,
-                   session, url_for)
+# Simple in-memory rate limiter for failed auth attempts
+_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+_LOGIN_LOCKOUT_S = 30
+_LOGIN_MAX_ATTEMPTS = 10
+
+from flask import (
+    Flask,
+    Response,
+    abort,
+    flash,
+    g,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from . import maintenance, settings as app_settings
+from . import maintenance
+from . import settings as app_settings
 from . import signalk as signalk_module
 from .config import Config, load_config
 from .db import connect, get_meta, init_db, log_action, set_meta
@@ -45,6 +61,7 @@ NAV = (
     ("devices", "Devices"),
     ("settings_page", "Settings"),
     ("maintenance_page", "Maintenance"),
+    ("change_password", "Password"),
 )
 
 
@@ -170,6 +187,17 @@ def create_app(cfg: Config | None = None) -> Flask:
         if user is None or pw_hash is None:
             return redirect(url_for("setup"))
 
+        # Rate limiting
+        client_ip = _real_ip()
+        now = time.time()
+        attempts = _LOGIN_ATTEMPTS.setdefault(client_ip, [])
+        # Purge old attempts
+        _LOGIN_ATTEMPTS[client_ip] = [t for t in attempts if now - t < _LOGIN_LOCKOUT_S]
+        if len(_LOGIN_ATTEMPTS[client_ip]) >= _LOGIN_MAX_ATTEMPTS:
+            log.warning("rate-limited login attempt from %s", client_ip)
+            return Response("Too many failed attempts. Try again later.", 429,
+                            {"Retry-After": str(_LOGIN_LOCKOUT_S)})
+
         auth = request.authorization
         ok = False
         if auth is not None and auth.username and auth.password:
@@ -177,19 +205,24 @@ def create_app(cfg: Config | None = None) -> Flask:
             pass_ok = check_password_hash(pw_hash, auth.password)
             ok = user_ok and pass_ok
         if not ok:
+            _LOGIN_ATTEMPTS[client_ip].append(now)
+            log.warning("failed login attempt from %s for user %s",
+                        client_ip, auth.username if auth else "(no auth header)")
             return Response("Authentication required", 401,
                             {"WWW-Authenticate": 'Basic realm="nmealog", charset="UTF-8"'})
+        # Successful login: clear attempts for this IP
+        _LOGIN_ATTEMPTS.pop(client_ip, None)
         return None
 
     @app.before_request
     def _csrf():
         if request.method != "POST":
-            return None
+            return
         expected = session.get("csrf")
         sent = request.form.get("csrf", "")
         if not expected or not hmac.compare_digest(expected.encode(), sent.encode()):
             abort(400, "The form expired or is invalid. Reload the page and try again.")
-        return None
+        return
 
     @app.context_processor
     def _inject():
@@ -254,8 +287,12 @@ def create_app(cfg: Config | None = None) -> Flask:
     def _filters(args, table: str):
         clauses, params = [], []
         if args.get("device"):
+            try:
+                device_id = int(args["device"])
+            except (ValueError, OverflowError):
+                abort(400, "device must be a whole number")
             clauses.append(f"{table}.device_id = ?")
-            params.append(int(args["device"]))
+            params.append(device_id)
         if args.get("sentence") and table == "sentences":
             clauses.append("sentences.sentence = ?")
             params.append(args["sentence"].upper()[:5])
@@ -378,14 +415,37 @@ def create_app(cfg: Config | None = None) -> Flask:
         return render_template("map.html", title="Map", devices=_devices(), args=request.args,
                                s=s, export_query=request.query_string.decode())
 
+    def _clamp_limit(raw: str | None, default: int, maximum: int) -> int:
+        """Parse *raw* as a limit, clamp to [1, maximum], and return the value.
+        On parse failure, abort with 400.
+        """
+        try:
+            value = int(raw) if raw is not None else default
+        except (ValueError, OverflowError):
+            abort(400, "limit must be a whole number")
+        if value < 1:
+            value = 1
+        elif value > maximum:
+            value = maximum
+        return value
+
+    def _warn_on_conflicting_params(args: dict[str, str]) -> str | None:
+        """Return a warning string when *since* and *until* are inverted, or None."""
+        since = args.get("since")
+        until = args.get("until")
+        if since and until:
+            try:
+                if float(since) > float(until):
+                    return "since is after until — the result set will be empty"
+            except (ValueError, TypeError):
+                pass
+        return None
+
     @app.get("/api/positions")
     def api_positions():
         db = get_db()
         where, params = _filters(request.args, "positions")
-        try:
-            limit = min(max(int(request.args.get("limit", 2000)), 1), 20000)
-        except ValueError:
-            abort(400, "limit must be a whole number")
+        limit = _clamp_limit(request.args.get("limit"), 2000, 20000)
         rows = db.execute(
             f"SELECT positions.received_at, positions.latitude, positions.longitude, positions.speed_kn, "
             f"positions.course_true, positions.source, devices.id AS device_id, devices.name AS device_name "
@@ -442,13 +502,13 @@ def create_app(cfg: Config | None = None) -> Flask:
                     out.seek(0)
                     out.truncate()
                     values = list(row)
-                    values[0] = datetime.fromtimestamp(values[0], timezone.utc).isoformat()
+                    values[0] = datetime.fromtimestamp(values[0], UTC).isoformat()
                     writer.writerow(values)
                     yield out.getvalue()
             finally:
                 db.close()
 
-        filename = f"nmealog-{table}-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}.csv"
+        filename = f"nmealog-{table}-{datetime.now(UTC):%Y%m%d-%H%M%S}.csv"
         return Response(generate(), mimetype="text/csv",
                         headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
@@ -482,7 +542,7 @@ def create_app(cfg: Config | None = None) -> Flask:
         except (TypeError, ValueError, OverflowError):
             return None
         if since.tzinfo is None:
-            since = since.replace(tzinfo=timezone.utc)
+            since = since.replace(tzinfo=UTC)
         if int(last_modified) <= int(since.timestamp()):
             return Response(status=304)
         return None
@@ -505,7 +565,7 @@ def create_app(cfg: Config | None = None) -> Flask:
     def _iso_ts(epoch: float | None) -> str | None:
         if epoch is None:
             return None
-        return datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        return datetime.fromtimestamp(epoch, UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
     @app.route("/signalk/v1/api/")
     @app.route("/signalk/v1/api/<path:sk_path>")
@@ -602,10 +662,7 @@ def create_app(cfg: Config | None = None) -> Flask:
         """
         db = get_db()
         where, params = _filters(request.args, "positions")
-        try:
-            limit = min(max(int(request.args.get("limit", 20000)), 1), 20000)
-        except ValueError:
-            abort(400, "limit must be a whole number")
+        limit = _clamp_limit(request.args.get("limit"), 20000, 20000)
 
         last_modified = db.execute(
             f"SELECT MAX(positions.received_at) FROM positions WHERE {where}", params).fetchone()[0]
@@ -617,7 +674,7 @@ def create_app(cfg: Config | None = None) -> Flask:
         rows = db.execute(
             f"SELECT positions.*, devices.name AS device_name FROM positions "
             f"JOIN devices ON devices.id = positions.device_id WHERE {where} "
-            f"ORDER BY positions.received_at LIMIT ?", (*params, limit)
+            f"ORDER BY positions.received_at DESC LIMIT ?", (*params, limit)
         ).fetchall()
 
         is_geojson = request.path.endswith(".geojson") or request.args.get("format") == "geojson"
@@ -657,16 +714,17 @@ def create_app(cfg: Config | None = None) -> Flask:
 
     # --- API: Current state -----------------------------------------------
 
+    _KNOWN_CURRENT_PARAMS = frozenset()  # no query parameters are accepted
+
     @app.get("/api/v1/current")
     def api_v1_current():
         """Return the latest position and live values per device.
 
         This is a simple, flat JSON endpoint suitable for scripts and
         external dashboards.  No time-range filtering — always returns the
-        most recent data.
+        most recent data.  Query parameters are silently ignored.
         """
         db = get_db()
-        s = settings()
         now = time.time()
 
         last_modified = _latest_epoch(db)
@@ -1104,6 +1162,60 @@ def create_app(cfg: Config | None = None) -> Flask:
         flash(f"Database restored. The previous state was saved as {safety.name}.", "ok")
         return redirect(url_for("maintenance_page"))
 
+    # --- API: Metrics -----------------------------------------------------
+
+    @app.get("/api/v1/metrics")
+    def api_v1_metrics():
+        """Return collector performance metrics and database health info."""
+        db = get_db()
+        now = time.time()
+        raw = get_meta(db, "collector_heartbeat")
+        heartbeat = json.loads(raw) if raw else None
+        stats = maintenance.db_stats(db, cfg.db_path, cfg.data_dir)
+        s = settings()
+        growth = maintenance.growth_estimate(db, cfg.db_path, s, now)
+
+        result: dict[str, Any] = {
+            "server": {
+                "time": _iso_ts(now),
+                "version": __import__("nmealog").__version__,
+            },
+            "collector": {
+                "alive": bool(heartbeat and now - heartbeat.get("ts", 0) < 60),
+            },
+            "database": {
+                "fileBytes": stats["file_bytes"],
+                "walBytes": stats["wal_bytes"],
+                "pageCount": stats["page_count"],
+                "freeBytes": stats["free_bytes"],
+                "diskFreeBytes": stats["disk_free"],
+                "counts": stats["counts"],
+            },
+            "settings": {
+                "loggingEnabled": s["logging_enabled"],
+                "storeSentences": s["store_sentences"],
+                "sentenceRetentionDays": s["sentence_retention_days"],
+                "positionRetentionDays": s["position_retention_days"],
+                "maxDbSizeMb": s["max_db_size_mb"],
+                "apiEnabled": s["api_enabled"],
+            },
+            "growth": growth,
+        }
+
+        if heartbeat:
+            result["collector"]["heartbeat"] = {
+                "ts": heartbeat["ts"],
+                "ageS": now - heartbeat["ts"],
+            }
+            if heartbeat.get("perf"):
+                result["collector"]["performance"] = heartbeat["perf"]
+            if heartbeat.get("relay"):
+                result["collector"]["relay"] = heartbeat["relay"]
+            if heartbeat.get("storage_error"):
+                result["collector"]["storageError"] = heartbeat["storage_error"]
+
+        return _json_response(result)
+
     # --- health -----------------------------------------------------------
 
     @app.get("/health")
@@ -1118,10 +1230,42 @@ def create_app(cfg: Config | None = None) -> Flask:
 
     # --- setup (first-run credential creation) ---------------------------
 
+    # --- change password --------------------------------------------------
+
+    @app.route("/password", methods=["GET", "POST"])
+    def change_password():
+        db = get_db()
+        if request.method == "GET":
+            return render_template("password.html", title="Change password", errors={}, values={})
+
+        # POST
+        current_pw = request.form.get("current_password", "")
+        new_pw = request.form.get("new_password", "")
+        confirm = request.form.get("confirm", "")
+        errors: dict[str, str] = {}
+
+        # Verify current password
+        pw_hash = cfg.password_hash or get_meta(db, "auth_password_hash")
+        if not pw_hash or not check_password_hash(pw_hash, current_pw):
+            errors["current_password"] = "Current password is incorrect."
+        if len(new_pw) < 8:
+            errors["new_password"] = "Password must be at least 8 characters."
+        if new_pw != confirm:
+            errors["confirm"] = "Passwords do not match."
+        if errors:
+            return render_template("password.html", title="Change password",
+                                   errors=errors, values={}), 400
+
+        new_hash = generate_password_hash(new_pw)
+        set_meta(db, "auth_password_hash", new_hash)
+        log_action(db, "web", "password change", "")
+        flash("Password changed.", "ok")
+        return redirect(url_for("status"))
+
     @app.route("/setup", methods=["GET", "POST"])
     def setup():
         db = get_db()
-        if get_meta(db, "auth_password_hash"):
+        if cfg.password_hash or get_meta(db, "auth_password_hash"):
             return redirect(url_for("status"))
 
         if request.method == "GET":

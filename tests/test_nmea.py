@@ -1,9 +1,8 @@
 import pytest
+from conftest import FIXTURES
 
 from nmealog.nmea import checksum_status, parse_line
 from nmealog.simulator import sentence
-
-from conftest import FIXTURES
 
 
 def test_checksum_states():

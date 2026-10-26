@@ -178,7 +178,7 @@ def test_unreachable_device_is_retried_and_reported(cfg):
 def test_relay_forwards_only_the_selected_device(sim_server, cfg):
     port, start, _ = sim_server
     device_id = _add_device(cfg, port)
-    other_id = _add_device(cfg, port, name="other")
+    _add_device(cfg, port, name="other")
     conn = connect(cfg.db_path)
     relay_port = socket.create_server(("127.0.0.1", 0)).getsockname()[1]
     settings.save(conn, {"relay_enabled": "on", "relay_device_id": str(device_id),
@@ -204,7 +204,7 @@ def test_relay_forwards_only_the_selected_device(sim_server, cfg):
             received += chunk
         lines = received.decode("ascii").splitlines()
         assert len(lines) >= 20
-        assert all(l.startswith("$") or l.startswith("!") for l in lines)
+        assert all(l.startswith(("$", "!")) for l in lines)
         conn = connect(cfg.db_path)
         heartbeat = conn.execute("SELECT value FROM meta WHERE key = 'collector_heartbeat'").fetchone()
         conn.close()

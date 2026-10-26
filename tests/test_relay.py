@@ -1,5 +1,4 @@
 import socket
-import threading
 import time
 
 from nmealog.relay import NmeaRelay

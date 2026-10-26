@@ -139,7 +139,7 @@ class NmeaRelay(threading.Thread):
             self._zeroconf.register_service(self._service_info)
             self.advertised = True
             log.info("relay: advertised as %s on %s", self.instance_name, addresses)
-        except Exception as exc:  # zeroconf can fail on hosts without multicast
+        except Exception as exc:  # noqa: BLE001 # zeroconf can fail on hosts without multicast
             self.error = f"advertising failed: {exc}"
             log.error("relay: %s", self.error)
 
@@ -148,7 +148,7 @@ class NmeaRelay(threading.Thread):
             try:
                 self._zeroconf.unregister_service(self._service_info)
                 self._zeroconf.close()
-            except Exception:
+            except Exception:  # noqa: BLE001,S110  # cleanup: best-effort unregister, ignore failures
                 pass
             self._zeroconf = None
         for conn in list(self._clients):

@@ -6,7 +6,7 @@ import os
 import re
 import shutil
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -268,7 +268,7 @@ def _unique_backup_path(backup_dir: Path, stamp: str) -> Path:
 
 def create_backup(conn: sqlite3.Connection, backup_dir: Path, keep: int) -> Path:
     backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     final = _unique_backup_path(backup_dir, stamp)
     tmp = final.with_name(final.name + ".tmp")
     dst = sqlite3.connect(str(tmp))
@@ -314,17 +314,61 @@ def delete_backup(backup_dir: Path, name: str) -> None:
     backup_path(backup_dir, name).unlink()
 
 
+REQUIRED_TABLES = frozenset({"meta", "settings", "devices", "device_status",
+                              "sentences", "latest", "positions", "maintenance_log"})
+
+# Expected columns per table — a subset that must be present
+REQUIRED_COLUMNS: dict[str, frozenset[str]] = {
+    "meta": frozenset({"key", "value"}),
+    "settings": frozenset({"key", "value", "updated_at"}),
+    "devices": frozenset({"id", "name", "host", "port", "enabled", "notes", "created_at", "updated_at"}),
+    "device_status": frozenset({"device_id", "state", "sentences_ok", "sentences_bad", "bytes_in", "updated_at"}),
+    "sentences": frozenset({"id", "device_id", "received_at", "talker", "sentence", "checksum_ok", "raw", "fields"}),
+    "latest": frozenset({"device_id", "sentence", "field", "value", "received_at"}),
+    "positions": frozenset({"id", "device_id", "received_at", "latitude", "longitude", "source"}),
+    "maintenance_log": frozenset({"id", "at", "actor", "action", "detail"}),
+}
+
+REQUIRED_INDEXES = frozenset({
+    "sentences_time",
+    "sentences_device_type",
+    "sentences_device_time",
+    "positions_time",
+    "positions_device_time",
+})
+
+
 def validate_database(path: Path) -> None:
     """Raise ValueError unless path is a healthy nmealog database of the current schema."""
     try:
         c = sqlite3.connect(str(path))
         try:
-            if c.execute("PRAGMA quick_check").fetchone()[0] != "ok":
-                raise ValueError("database failed the integrity check")
+            problems = [row[0] for row in c.execute("PRAGMA integrity_check").fetchall()]
+            if problems != ["ok"]:
+                raise ValueError("integrity_check failed: " + "; ".join(problems[:5]))
+
             tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-            missing = {"meta", "settings", "devices", "sentences", "positions"} - tables
+            missing = REQUIRED_TABLES - tables
             if missing:
-                raise ValueError("not an nmealog database (missing " + ", ".join(sorted(missing)) + ")")
+                raise ValueError("not an nmealog database (missing "
+                                 + ", ".join(sorted(missing)) + ")")
+
+            # Validate columns per table
+            for tbl, expected_cols in REQUIRED_COLUMNS.items():
+                cols = {r[1] for r in c.execute(f"PRAGMA table_info({tbl})")}
+                missing_cols = expected_cols - cols
+                if missing_cols:
+                    raise ValueError(f"table {tbl} is missing columns: "
+                                     + ", ".join(sorted(missing_cols)))
+
+            # Check indexes
+            indexes = {r[0] for r in c.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND name != 'sqlite_autoindex_meta_1'"
+            )}
+            missing_idxs = REQUIRED_INDEXES - indexes
+            if missing_idxs:
+                raise ValueError("missing indexes: " + ", ".join(sorted(missing_idxs)))
+
             row = c.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
             if not row or int(row[0]) != SCHEMA_VERSION:
                 version = row[0] if row else "unknown"

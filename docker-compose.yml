@@ -18,6 +18,8 @@ services:
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "5" }
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   web:
     build: .

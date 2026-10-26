@@ -335,7 +335,7 @@ def test_maintenance_page_performance_section(client, cfg):
 
 
 def test_device_test_page_renders_for_a_device(client, cfg, monkeypatch):
-    import nmealog.web as web
+    from nmealog import web
 
     monkeypatch.setattr(web.socket, "create_connection", _refuse)
     token = _csrf(client, "/devices")

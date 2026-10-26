@@ -3,12 +3,21 @@ from __future__ import annotations
 import os
 import sqlite3
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 SCHEMA_VERSION = 1
 BUSY_TIMEOUT_S = 15
+
+# Migration functions keyed by (from_version, to_version).
+# Each function receives the connection and must upgrade in place.
+_MIGRATIONS: dict[tuple[int, int], callable] = {}
+
+
+def register_migration(from_version: int, to_version: int, fn: callable) -> None:
+    """Register a migration function that upgrades from from_version to to_version."""
+    _MIGRATIONS[(from_version, to_version)] = fn
 
 STATEMENTS = (
     """CREATE TABLE IF NOT EXISTS meta (
@@ -111,6 +120,22 @@ def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
         conn.execute("COMMIT")
 
 
+def migrate(conn: sqlite3.Connection, target_version: int = SCHEMA_VERSION) -> None:
+    """Migrate the database to *target_version*, running each step in order."""
+    version = int(get_meta(conn, "schema_version", "0"))
+    while version < target_version:
+        next_version = version + 1
+        key = (version, next_version)
+        fn = _MIGRATIONS.get(key)
+        if fn is None:
+            raise RuntimeError(
+                f"No migration path from schema version {version} to {next_version}"
+            )
+        fn(conn)
+        set_meta(conn, "schema_version", str(next_version))
+        version = next_version
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     with transaction(conn):
         for statement in STATEMENTS:
@@ -121,7 +146,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         )
     version = int(get_meta(conn, "schema_version", "0"))
     if version != SCHEMA_VERSION:
-        raise RuntimeError(f"database schema version {version}, expected {SCHEMA_VERSION}")
+        migrate(conn, SCHEMA_VERSION)
 
 
 def get_meta(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:

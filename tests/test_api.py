@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import json
 import time
+from email.utils import formatdate, parsedate_to_datetime
 
 import pytest
-from email.utils import formatdate, parsedate_to_datetime
 from werkzeug.security import generate_password_hash
 
 from nmealog.config import Config
-from nmealog.db import connect, init_db
+from nmealog.db import connect
 from nmealog.web import create_app
 
 PASSWORD = "correct horse"
@@ -160,7 +160,6 @@ class TestSignalK:
         data = resp.get_json()
         assert "value" in data
         # Speed should be converted to m/s
-        import math
         assert abs(data["value"] - 8.5 * 0.514444) < 0.001
         assert data["units"] == "m/s"
 

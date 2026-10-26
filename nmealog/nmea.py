@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pynmea2
 
@@ -64,7 +64,7 @@ def _generic(body: str) -> tuple[str, str, dict[str, str]]:
 def _typed(text: str):
     try:
         msg = pynmea2.parse(text, check=False)
-    except Exception:
+    except Exception:  # noqa: BLE001  # NMEA parsing is inherently fragile — any exception means "not parseable"
         return None
     return msg if isinstance(msg, pynmea2.TalkerSentence) else None
 
@@ -103,7 +103,7 @@ def _position(msg) -> Position | None:
                 speed_kn=float(msg.spd_over_grnd) if msg.spd_over_grnd else None,
                 course_true=float(msg.true_course) if msg.true_course else None,
             )
-    except Exception:
+    except Exception:  # noqa: BLE001  # pynmea2 message attributes vary by sentence type; getattr or conversion can fail
         return None
     return None
 
@@ -124,12 +124,12 @@ def _valid_position(pos: Position | None) -> Position | None:
 def _gps_time(msg) -> float | None:
     try:
         dt = getattr(msg, "datetime", None)
-    except Exception:
+    except Exception:  # noqa: BLE001  # pynmea2 may raise for non-standard message types
         return None
     if not isinstance(dt, datetime):
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt.timestamp()
 
 

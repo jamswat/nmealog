@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import maintenance, settings as app_settings
+from . import maintenance
+from . import settings as app_settings
 from .config import Config
 from .db import connect, get_meta, init_db, log_action, set_meta, transaction
 from .nmea import Parsed, parse_line
@@ -71,7 +72,7 @@ class Writer(threading.Thread):
     per-device connections would otherwise fight over every second.
     """
 
-    def __init__(self, db_path, shared: "Shared"):
+    def __init__(self, db_path, shared: Shared):
         super().__init__(name="db-writer", daemon=True)
         self.db_path = db_path
         self.shared = shared

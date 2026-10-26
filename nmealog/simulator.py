@@ -8,7 +8,7 @@ import random
 import socket
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def sentence(body: str) -> str:
@@ -70,7 +70,7 @@ class Simulator:
         self.tick += 1
         self.clock += dt
         self.vessel.step(dt)
-        now = datetime.fromtimestamp(self.clock, timezone.utc)
+        now = datetime.fromtimestamp(self.clock, UTC)
         hhmmss = now.strftime("%H%M%S.00")
         date = now.strftime("%d%m%y")
         lat, ns = _lat(self.vessel.lat)

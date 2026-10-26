@@ -10,18 +10,17 @@ from __future__ import annotations
 
 import math
 import sqlite3
-import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 __all__ = [
-    "SIGNALK_VERSION",
     "SELF_URN",
+    "SIGNALK_VERSION",
     "build_vessel",
+    "build_vessel_for_device",
     "fetch_latest",
     "field_to_signalk",
     "iso_time",
-    "build_vessel_for_device",
     "self_device",
 ]
 
@@ -196,7 +195,7 @@ def field_to_signalk(sentence: str, field: str) -> SignalKMap | None:
 
 def iso_time(epoch: float) -> str:
     """Format a Unix epoch timestamp as ISO 8601 in UTC."""
-    return datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return datetime.fromtimestamp(epoch, UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _build_position_node(

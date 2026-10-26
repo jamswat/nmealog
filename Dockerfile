@@ -19,5 +19,8 @@ COPY nmealog ./nmealog
 USER nmealog
 EXPOSE 8000
 
+HEALTHCHECK --interval=60s --timeout=10s --retries=3 --start-period=20s \
+    CMD python -m nmealog healthcheck web --port 8000 || exit 1
+
 CMD gunicorn --bind "$NMEALOG_WEB_BIND" --workers 1 --threads 8 \
     --timeout 300 --access-logfile - "nmealog.web:create_app()"

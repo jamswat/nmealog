@@ -62,7 +62,7 @@ All actions from the Maintenance page run in the web process, except the schedul
 
 ## Web security
 
-- HTTP Basic auth on every page and API route. The password is stored as a Werkzeug hash in an environment variable. The app refuses to start without it, unless `NMEALOG_ALLOW_NO_AUTH` is set explicitly.
+- HTTP Basic auth on every page. API routes use IP-based access control instead of Basic Auth (see the API docs). The password is stored as a Werkzeug hash in an environment variable. The app refuses to start without it, unless `NMEALOG_ALLOW_NO_AUTH` is set explicitly.
 - Every POST requires a CSRF token from the session cookie. The session key is generated once and stored in the data volume with mode 0600.
 - Destructive actions need a typed confirmation (`DELETE`, `RESTORE`).
 - Backup names are checked against a fixed pattern, so downloads and deletes cannot reach outside the backups directory.
@@ -76,7 +76,7 @@ All actions from the Maintenance page run in the web process, except the schedul
 
 ## Tests
 
-`pytest` runs about 63 tests
+`pytest` runs about 98 tests
 
 - `test_nmea.py`: checksums, typed and generic parsing, position rules, the captured live GPS file (`tests/fixtures/live_gps_gbaships.nmea`).
 - `test_settings.py`: defaults, validation, storage, logging of changes.
