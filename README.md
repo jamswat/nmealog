@@ -1,6 +1,7 @@
 # nmealog
 
-Records NMEA 0183 data from serial-to-TCP server into SQLite, shows it in a web interface, and can re-serve a chosen GPS to the local network. (supports Signal K (beta!!!), GeoJSON, and a basic live location JSON api)
+Records NMEA 0183 data from serial-to-TCP server into SQLite, shows it in a web interface, and can re-serve a chosen GPS over the network. Currently supports Signal K (beta!!!), GeoJSON, and a basic live location JSON api. It can also provide GPS location to the LAN with mDNS.
+<img width="1460" height="658" alt="image" src="https://github.com/user-attachments/assets/c731728a-8cd8-44f8-866e-13f6bba6fabc" />
 
 ## Features
 
@@ -11,6 +12,8 @@ Records NMEA 0183 data from serial-to-TCP server into SQLite, shows it in a web 
 - **Maintenance:** prune, size cap, reclaim, checkpoint, optimize, integrity check, vacuum, delete by date, scheduled and manual backups, download, restore, activity log, and a [growth estimate](docs/operations.md#growth-estimate) with days until the size cap.
 - **LAN relay:** optional. Re-serves one device's sentences on TCP port 10110 and advertises them over mDNS as `_nmea-0183._tcp`, so GeoClue, and some and similar clients pick up the position. **Off by default**, because it publishes the position to the whole network. See [docs/lan-relay.md](docs/lan-relay.md).
 - **Settings in the database:** every option is editable in the UI and takes effect without a restart. See [docs/settings.md](docs/settings.md).
+<img width="1202" height="918" alt="image" src="https://github.com/user-attachments/assets/38108b63-7a25-4eb3-986c-16d3088e03b7" />
+<img width="1134" height="611" alt="image" src="https://github.com/user-attachments/assets/e67524cb-7bf8-467e-9fd0-fbfe2ed9688a" />
 
 ## Documentation
 
