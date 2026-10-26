@@ -43,7 +43,7 @@ from flask import (
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from . import maintenance
+from . import __version__, maintenance
 from . import settings as app_settings
 from . import signalk as signalk_module
 from .config import Config, load_config
@@ -227,7 +227,7 @@ def create_app(cfg: Config | None = None) -> Flask:
     @app.context_processor
     def _inject():
         token = session.setdefault("csrf", secrets.token_urlsafe(32))
-        return {"csrf": token, "nav": NAV}
+        return {"csrf": token, "nav": NAV, "app_version": __version__}
 
     # --- template helpers -------------------------------------------------
 

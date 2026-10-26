@@ -96,6 +96,13 @@ def test_pages_render(client):
         assert resp.status_code == 200, path
 
 
+def test_software_version_is_shown_in_the_header(client):
+    from nmealog import __version__
+
+    html = client.get("/", headers=AUTH).get_data(as_text=True)
+    assert f"v{__version__}" in html
+
+
 def test_post_without_csrf_is_rejected(client):
     resp = client.post("/devices", headers=AUTH, data={"name": "x", "host": "10.0.0.1", "port": "4001"})
     assert resp.status_code == 400

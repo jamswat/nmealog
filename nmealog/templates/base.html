@@ -10,7 +10,7 @@
 </head>
 <body>
 <header class="top">
-  <span class="brand">nmealog</span>
+  <span class="brand">nmealog</span> <span class="muted small" title="Software version">v{{ app_version }}</span>
   <nav>
     {% for endpoint, label in nav %}
       <a href="{{ url_for(endpoint) }}"{% if request.endpoint == endpoint %} aria-current="page"{% endif %}>{{ label }}</a>
