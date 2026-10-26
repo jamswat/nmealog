@@ -429,6 +429,20 @@ def create_app(cfg: Config | None = None) -> Flask:
             value = maximum
         return value
 
+    def _optional_positive(raw: str | None, maximum: int) -> int | None:
+        """Return *raw* as a whole number in [1, maximum], or None when absent.
+        Values outside the range or not numeric abort with 400.
+        """
+        if raw is None or raw == "":
+            return None
+        try:
+            value = int(raw)
+        except (ValueError, OverflowError):
+            abort(400, "max_points must be a whole number")
+        if not 1 <= value <= maximum:
+            abort(400, f"max_points must be between 1 and {maximum}")
+        return value
+
     def _warn_on_conflicting_params(args: dict[str, str]) -> str | None:
         """Return a warning string when *since* and *until* are inverted, or None."""
         since = args.get("since")
@@ -657,12 +671,15 @@ def create_app(cfg: Config | None = None) -> Flask:
           device   – device id to filter
           since    – Unix epoch, inclusive lower bound
           until    – Unix epoch, inclusive upper bound
-          format   – "geojson" to force GeoJSON (or use .geojson URL)
-          limit    – max rows (default 20000, max 20000)
+          format     – "geojson" to force GeoJSON (or use .geojson URL)
+          limit      – max rows (default 20000, max 20000)
+          max_points – thin the result to about this many points, keeping the
+                       newest fix in each time slice per device (1–20000)
         """
         db = get_db()
         where, params = _filters(request.args, "positions")
         limit = _clamp_limit(request.args.get("limit"), 20000, 20000)
+        max_points = _optional_positive(request.args.get("max_points"), 20000)
 
         last_modified = db.execute(
             f"SELECT MAX(positions.received_at) FROM positions WHERE {where}", params).fetchone()[0]
@@ -671,11 +688,36 @@ def create_app(cfg: Config | None = None) -> Flask:
             return resp_304
         headers = _cache_headers(last_modified)
 
-        rows = db.execute(
-            f"SELECT positions.*, devices.name AS device_name FROM positions "
-            f"JOIN devices ON devices.id = positions.device_id WHERE {where} "
-            f"ORDER BY positions.received_at DESC LIMIT ?", (*params, limit)
-        ).fetchall()
+        select = (
+            "SELECT positions.*, devices.name AS device_name FROM positions "
+            "JOIN devices ON devices.id = positions.device_id "
+        )
+        if max_points is not None:
+            # Keep the newest fix in each time slice, per device, so the thinned
+            # track still spans the whole requested window.
+            span = db.execute(
+                f"SELECT COUNT(*), MIN(positions.received_at), MAX(positions.received_at) "
+                f"FROM positions WHERE {where}", params).fetchone()
+            count, first, last = span[0], span[1], span[2]
+            if count > max_points and last > first:
+                bucket = (last - first) / max_points
+                rows = db.execute(
+                    select + f"WHERE {where} AND positions.id IN ("
+                    f"SELECT MAX(id) FROM positions WHERE {where} "
+                    f"GROUP BY device_id, CAST((received_at - ?) / ? AS INTEGER)) "
+                    f"ORDER BY positions.received_at DESC LIMIT ?",
+                    (*params, *params, first, bucket, limit)
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    select + f"WHERE {where} ORDER BY positions.received_at DESC LIMIT ?",
+                    (*params, limit)
+                ).fetchall()
+        else:
+            rows = db.execute(
+                select + f"WHERE {where} ORDER BY positions.received_at DESC LIMIT ?",
+                (*params, limit)
+            ).fetchall()
 
         is_geojson = request.path.endswith(".geojson") or request.args.get("format") == "geojson"
 

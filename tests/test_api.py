@@ -436,3 +436,40 @@ class TestConditionalRequests:
             assert resp.headers.get("Last-Modified"), path
             stale = client.get(path, headers={"If-Modified-Since": resp.headers["Last-Modified"]})
             assert stale.status_code == 304, path
+
+class TestThinnedTrack:
+    def _fill(self, cfg, count: int, start: float):
+        conn = connect(cfg.db_path)
+        for i in range(count):
+            _add_position(conn, lat=50.0 + i * 0.0001, ts=start + i * 10)
+        conn.close()
+
+    def test_max_points_thins_and_spans_the_window(self, client, cfg):
+        start = time.time() - 10_000
+        self._fill(cfg, 1000, start)
+        data = client.get("/api/v1/positions?max_points=100").get_json()
+        points = data["points"]
+        assert 90 <= len(points) <= 110
+        times = [p["t"] for p in points]
+        # Newest first, and the thinned track still reaches the start and end.
+        assert times == sorted(times, reverse=True)
+        assert times[0] >= start + 990 * 10
+        assert times[-1] <= start + 110 * 10
+
+    def test_max_points_leaves_small_results_untouched(self, client, cfg):
+        start = time.time() - 1000
+        self._fill(cfg, 20, start)
+        full = client.get("/api/v1/positions").get_json()["points"]
+        thinned = client.get("/api/v1/positions?max_points=100").get_json()["points"]
+        assert len(thinned) == len(full)
+
+    def test_max_points_applies_to_geojson(self, client, cfg):
+        start = time.time() - 10_000
+        self._fill(cfg, 500, start)
+        data = client.get("/api/v1/positions.geojson?max_points=50").get_json()
+        assert len(data["features"]) <= 55
+
+    def test_max_points_rejects_bad_values(self, client):
+        assert client.get("/api/v1/positions?max_points=0").status_code == 400
+        assert client.get("/api/v1/positions?max_points=20001").status_code == 400
+        assert client.get("/api/v1/positions?max_points=abc").status_code == 400
