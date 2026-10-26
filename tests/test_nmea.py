@@ -159,3 +159,19 @@ def test_live_gps_capture_parses_cleanly():
     assert parsed > 100
     assert bad == 0
     assert errors <= 2
+
+
+def test_gll_status_a_with_estimated_mode_has_no_position():
+    p = parse_line(sentence("GPGLL,4807.038,N,01131.000,E,123519,A,E"))
+    assert p.position is None
+
+
+def test_gll_differential_mode_has_position():
+    p = parse_line(sentence("GPGLL,4807.038,N,01131.000,E,123519,A,D"))
+    assert p.position is not None
+
+
+def test_rmc_west_magnetic_variation_is_negative():
+    p = parse_line(sentence("GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W,D"))
+    assert p.fields["mag_variation"] == "-003.1"
+    assert p.fields["mag_var_dir"] == "W"

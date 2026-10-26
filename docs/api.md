@@ -51,16 +51,20 @@ device.
 |-------------|---------------|-------|
 | GGA / GNS / RMC / GLL | `navigation.position.value` (latitude, longitude) | deg |
 | GGA / GNS | `navigation.gnss.antennaAltitude.value` | m |
+| GGA / GNS | `navigation.gnss.geoidalSeparation.value` | m |
 | VTG / RMC | `navigation.speedOverGround.value` | m/s |
 | VTG / RMC | `navigation.courseOverGroundTrue.value` | rad |
 | GGA / GNS | `navigation.gnss.methodQuality.value` | enum (see below) |
 | GGA / GNS | `navigation.gnss.satellites.value` | count |
 | GGA / GNS / GSA | `navigation.gnss.horizontalDilution.value` | — |
 | GSA | `navigation.gnss.positionDilution.value` | — |
+| HDG | `navigation.headingCompass.value` (raw sensor reading) | rad |
+| HDG + deviation | `navigation.headingMagnetic.value` (derived) | rad |
+| HDG + deviation + variation | `navigation.headingTrue.value` (derived) | rad |
 | HDT / THS | `navigation.headingTrue.value` | rad |
-| HDG / HDM | `navigation.headingMagnetic.value` | rad |
+| HDM | `navigation.headingMagnetic.value` | rad |
 | HDG | `navigation.magneticDeviation.value` | rad |
-| HDG | `navigation.magneticVariation.value` | rad |
+| HDG / RMC | `navigation.magneticVariation.value` | rad |
 | ROT | `navigation.rateOfTurn.value` | rad/s |
 | DBT / DPT | `environment.depth.belowTransducer.value` | m |
 | MDA | `environment.outside.pressure.value` | Pa |
@@ -79,7 +83,9 @@ Each leaf node includes `$source`, `timestamp` (ISO 8601), `pgn` and
 Notes on how values are chosen:
 
 - **Units.** All angles are radians and all speeds metres per second, as Signal K requires. Relative wind angles (`angleApparent`, `angleTrueWater`) are signed: negative to port, positive to starboard. HDG variation and deviation are signed too: East is positive and West is negative.
-- **Position** comes from the positions table, which only stores fixes that pass validation. Raw NMEA latitude and longitude are never published, because they are in degrees and minutes.
+- **Position** comes from the positions table, which only stores fixes that pass validation. Raw NMEA latitude and longitude are never published, because they are in degrees and minutes. While a combined `GN` fix is fresh, single-constellation fixes (`GP`, `GL`) are not stored, so the track does not jump between solutions.
+- **Headings.** The HDG heading is the raw compass reading, published as `headingCompass`. Magnetic heading is that reading plus the signed deviation, and true heading is magnetic plus the signed variation, as the NMEA 0183 HDG notes describe. A derived value is only published when its inputs are present.
+- **Freshness.** Each value has a validity period, and values older than it are left out of the tree. Every leaf carries `meta.timeout` with that period in seconds, as the Signal K metadata section describes. Most navigation values use 30 s, position and GNSS use 60 s, environment values 300 s, and magnetic variation and deviation 600 s.
 - **`methodQuality`** uses the Signal K enum: `no GPS`, `GNSS Fix`, `DGNSS fix`, `Precise GNSS`, `RTK fixed integer`, `RTK float`, `Estimated (DR) mode`, `Manual input`, `Simulator mode`, `Error`.
 - **Status flags.** A sentence's own status is respected. Data from an RMC with status `V` or a mode other than `A`/`D`, a VTG with mode `N`, a ROT with status `V`, or a THS with status `V` is not published. A GNS or GGA with no fix still reports `methodQuality` as `no GPS`.
 - **Satellites in view** (GSV) are not part of the Signal K tree, because the specification has no path for them. The count, summed across all talkers (`GP`, `GL`, `GA`, `GB`, ...), is available as a live value in `/api/v1/current`.
@@ -186,7 +192,7 @@ curl http://nmealog-host:8090/api/v1/current
 ```json
 {
   "server": {
-    "version": "1.2.0",
+    "version": "1.3.0",
     "time": "2024-10-27T12:00:00.000Z",
     "collectorAlive": true
   },

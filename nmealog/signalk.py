@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -36,7 +37,7 @@ _METHOD_QUALITY = (
     "no GPS",
     "GNSS Fix",
     "DGNSS fix",
-    "Precise GNSS",
+    "GNSS Fix",  # GGA 3 is PPS mode, which has no Signal K equivalent of its own
     "RTK fixed integer",
     "RTK float",
     "Estimated (DR) mode",
@@ -120,6 +121,20 @@ _FIELD_MAP: dict[tuple[str, str], SignalKMap] = {
         "converter": float,
     },
     # --- Position (GNS) ---
+    ("GGA", "geo_sep"): {
+        "ctx": "gnss.geoidalSeparation",
+        "pgn": 129029,
+        "description": "GNSS Geoidal Separation",
+        "units": "m",
+        "converter": float,
+    },
+    ("GNS", "geo_sep"): {
+        "ctx": "gnss.geoidalSeparation",
+        "pgn": 129029,
+        "description": "GNSS Geoidal Separation",
+        "units": "m",
+        "converter": float,
+    },
     ("GNS", "altitude"): {
         "ctx": "gnss.antennaAltitude",
         "pgn": 129029,
@@ -219,10 +234,12 @@ _FIELD_MAP: dict[tuple[str, str], SignalKMap] = {
         "converter": _radians,
     },
     # --- Heading (HDG) ---
+    # The HDG heading is the raw compass reading.  Magnetic and true headings are
+    # derived from it, using deviation and variation, in build_vessel.
     ("HDG", "heading"): {
-        "ctx": "headingMagnetic",
+        "ctx": "headingCompass",
         "pgn": 127250,
-        "description": "Heading (Magnetic)",
+        "description": "Heading (Compass)",
         "units": "rad",
         "converter": _radians,
     },
@@ -230,6 +247,13 @@ _FIELD_MAP: dict[tuple[str, str], SignalKMap] = {
         "ctx": "magneticDeviation",
         "pgn": 127250,
         "description": "Magnetic Deviation",
+        "units": "rad",
+        "converter": _radians,
+    },
+    ("RMC", "mag_variation"): {
+        "ctx": "magneticVariation",
+        "pgn": 127250,
+        "description": "Magnetic Variation",
         "units": "rad",
         "converter": _radians,
     },
@@ -356,6 +380,7 @@ def _build_position_node(
         "timestamp": iso_time(received_at),
         "pgn": 129025,
         "description": "Position",
+        "meta": {"timeout": _timeout_for("position")},
     }
 
 
@@ -382,6 +407,7 @@ def _get_path(root: dict[str, Any], dotted: str) -> Any:
 
 
 def _sensor_node(
+    ctx: str,
     value: Any,
     received_at: float,
     source_label: str,
@@ -396,6 +422,7 @@ def _sensor_node(
         "pgn": pgn,
         "description": description,
         "units": units,
+        "meta": {"timeout": _timeout_for(ctx)},
     }
 
 
@@ -418,6 +445,7 @@ def _apply_mwv(
     latest: list[dict[str, Any]],
     device_id: int,
     source_label: str,
+    now: float,
 ) -> None:
     """Add apparent/true wind from an MWV sentence, honouring its reference and units."""
     rows = {
@@ -436,12 +464,13 @@ def _apply_mwv(
     angle_path, speed_path = paths
 
     angle = rows.get("wind_angle")
-    if angle is not None:
+    if angle is not None and now - angle["received_at"] <= _timeout_for(f"environment.wind.{angle_path}"):
         value = as_float(angle["value"])
         if value is not None:
             _set_path(
                 navigation, f"environment.wind.{angle_path}",
-                _sensor_node(_bow_angle_radians(value), angle["received_at"], source_label, 130306,
+                _sensor_node(f"environment.wind.{angle_path}", _bow_angle_radians(value),
+                             angle["received_at"], source_label, 130306,
                              "Wind Angle", "rad"),
             )
 
@@ -450,10 +479,11 @@ def _apply_mwv(
     if speed is not None and units is not None:
         factor = _WIND_SPEED_TO_MS.get(str(units["value"]).strip().upper())
         value = as_float(speed["value"])
-        if factor is not None and value is not None:
+        ctx = f"environment.wind.{speed_path}"
+        if factor is not None and value is not None and now - speed["received_at"] <= _timeout_for(ctx):
             _set_path(
-                navigation, f"environment.wind.{speed_path}",
-                _sensor_node(value * factor, speed["received_at"], source_label, 130306,
+                navigation, ctx,
+                _sensor_node(ctx, value * factor, speed["received_at"], source_label, 130306,
                              "Wind Speed", "m/s"),
             )
 
@@ -505,11 +535,79 @@ def fetch_devices(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 # tree builders
 # ---------------------------------------------------------------------------
 
+# Seconds a value stays valid after it was received.  Values older than this are
+# left out of the tree.  Slow-changing values get longer limits.
+_DEFAULT_TIMEOUT_S = 30.0
+_TIMEOUT_BY_PREFIX: tuple[tuple[str, float], ...] = (
+    ("position", 60.0),
+    ("gnss", 60.0),
+    ("environment.outside", 300.0),
+    ("environment.water", 300.0),
+    ("magneticVariation", 600.0),
+    ("magneticDeviation", 600.0),
+)
+
+_HEADING_COMPASS = {"pgn": 127250, "description": "Heading (Compass)", "units": "rad"}
+_HEADING_MAGNETIC = {"pgn": 127250, "description": "Heading (Magnetic)", "units": "rad"}
+_HEADING_TRUE = {"pgn": 127250, "description": "Heading (True)", "units": "rad"}
+
+
+def _timeout_for(ctx: str) -> float:
+    for prefix, seconds in _TIMEOUT_BY_PREFIX:
+        if ctx == prefix or ctx.startswith(prefix + "."):
+            return seconds
+    return _DEFAULT_TIMEOUT_S
+
+
+def _leaf(ctx: str, value: Any, received_at: float, source_label: str, mapping: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "value": value,
+        "$source": source_label,
+        "timestamp": iso_time(received_at),
+        "pgn": mapping["pgn"],
+        "description": mapping["description"],
+        "units": mapping["units"],
+        "meta": {"timeout": _timeout_for(ctx)},
+    }
+
+
+def _derived_headings(hdg: dict[str, dict[str, Any]]) -> list[tuple[str, float, float, dict[str, Any]]]:
+    """Magnetic and true heading from an HDG sensor reading.
+
+    NMEA 0183 HDG notes: magnetic = sensor reading + deviation (east positive,
+    so the signed value is added directly), and true = magnetic + variation.
+    The fields are null when unknown, so a derived value needs its inputs.
+    Each entry is (context, radians, received_at, mapping).
+    """
+    heading = hdg.get("heading")
+    compass = as_float(heading["value"]) if heading else None
+    if heading is None or compass is None:
+        return []
+    derived = [("headingCompass", math.radians(compass), heading["received_at"], _HEADING_COMPASS)]
+
+    deviation = hdg.get("deviation")
+    deviation_deg = as_float(deviation["value"]) if deviation else None
+    if deviation is None or deviation_deg is None:
+        return derived
+    magnetic = (compass + deviation_deg) % 360.0
+    magnetic_at = max(heading["received_at"], deviation["received_at"])
+    derived.append(("headingMagnetic", math.radians(magnetic), magnetic_at, _HEADING_MAGNETIC))
+
+    variation = hdg.get("variation")
+    variation_deg = as_float(variation["value"]) if variation else None
+    if variation is None or variation_deg is None:
+        return derived
+    true = (magnetic + variation_deg) % 360.0
+    derived.append(("headingTrue", math.radians(true), max(magnetic_at, variation["received_at"]), _HEADING_TRUE))
+    return derived
+
+
 def build_vessel(
     device_id: int,
     device_name: str,
     latest: list[dict[str, Any]],
     position: dict[str, Any] | None,
+    now: float | None = None,
 ) -> dict[str, Any]:
     """Build a Signal K vessel resource tree for one device.
 
@@ -523,26 +621,24 @@ def build_vessel(
         Rows from the *latest* table for this device.
     position
         A single dict from the *positions* table, or *None*.
+    now
+        Reference time in epoch seconds for staleness checks.  Defaults to the
+        current time.
 
     Returns
     -------
     A Signal K ``navigation`` subtree.
     """
+    now = time.time() if now is None else now
     navigation: dict[str, Any] = {}
     source_label = f"nmealog.{device_name}"
 
     # --- position from the latest fix in the positions table ---
-    if position is not None:
+    if position is not None and now - position["received_at"] <= _timeout_for("position"):
         navigation["position"] = _build_position_node(
             position["latitude"], position["longitude"],
             device_name, position["received_at"],
         )
-
-    # --- map each live value ---
-    # Keep the newest value for each context.  Position comes from the positions table above.
-    ctx_values: dict[str, Any] = {}
-    ctx_timestamps: dict[str, float] = {}
-    ctx_best_at: dict[str, float] = {}
 
     # A sentence's own status fields (RMC status, ROT status, ...) decide whether
     # its data may be published.  Entries flagged keep_invalid still report "no fix".
@@ -552,56 +648,40 @@ def build_vessel(
         by_sentence.setdefault(row["sentence"], {})[row["field"]] = row["value"]
     valid_sentences = {name for name, fields in by_sentence.items() if sentence_valid(name, fields)}
 
+    # Candidates are (context, value, received_at, mapping).  The newest fresh
+    # candidate for each context is published.
+    candidates: list[tuple[str, Any, float, dict[str, Any]]] = []
     for row in device_rows:
         mapping = _FIELD_MAP.get((row["sentence"], row["field"]))
         if mapping is None:
             continue
         if row["sentence"] not in valid_sentences and not mapping.get("keep_invalid"):
             continue
-        ctx = mapping["ctx"]
         try:
             converted = mapping["converter"](row["value"])
         except (ValueError, TypeError):
             continue
-        ts = row["received_at"]
-        if ctx not in ctx_best_at or ts >= ctx_best_at[ctx]:
-            ctx_values[ctx] = converted
-            ctx_best_at[ctx] = ts
-        ctx_timestamps[ctx] = max(ctx_timestamps.get(ctx, 0.0), ts)
+        candidates.append((mapping["ctx"], converted, row["received_at"], mapping))
+    if "HDG" in valid_sentences:
+        hdg = {row["field"]: row for row in device_rows if row["sentence"] == "HDG"}
+        candidates.extend(_derived_headings(hdg))
 
-    # Write the collected values into the navigation tree
-    for ctx, data in ctx_values.items():
-        parts = ctx.split(".")
-        current = navigation
-        for part in parts:
-            current = current.setdefault(part, {})
-        current["value"] = data
+    best: dict[str, tuple[Any, float, dict[str, Any]]] = {}
+    for ctx, value, received_at, mapping in candidates:
+        if now - received_at > _timeout_for(ctx):
+            continue
+        if ctx not in best or received_at >= best[ctx][1]:
+            best[ctx] = (value, received_at, mapping)
 
-        # Add metadata if this container is fresh
-        mapping_for_ctx = _FIELD_MAP.get(
-            _reverse_lookup(ctx),
-            {"pgn": 0, "description": "", "units": ""},
-        )
+    for ctx, (value, received_at, mapping) in best.items():
+        node = navigation
+        for part in ctx.split("."):
+            node = node.setdefault(part, {})
+        node.update(_leaf(ctx, value, received_at, source_label, mapping))
 
-        # Only set metadata on the context node if we haven't already
-        if "$source" not in current:
-            current["$source"] = source_label
-            current["timestamp"] = iso_time(ctx_timestamps[ctx])
-            current["pgn"] = mapping_for_ctx["pgn"]
-            current["description"] = mapping_for_ctx["description"]
-            current["units"] = mapping_for_ctx["units"]
-
-    _apply_mwv(navigation, latest, device_id, source_label)
+    _apply_mwv(navigation, latest, device_id, source_label, now)
 
     return navigation
-
-
-def _reverse_lookup(ctx: str) -> tuple[str, str]:
-    """Find any (sentence, field) that maps to *ctx*."""
-    for (sen, fld), m in _FIELD_MAP.items():
-        if m["ctx"] == ctx:
-            return (sen, fld)
-    return ("", "")
 
 
 def build_vessel_for_device(conn: sqlite3.Connection, device_id: int) -> dict[str, Any] | None:

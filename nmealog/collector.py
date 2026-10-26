@@ -35,7 +35,7 @@ WAL_CHECKPOINT_MIN_BYTES = 32 * 1024 * 1024
 PERF_WINDOW_S = 60.0  # sliding window for the throughput rates on the Maintenance page
 PERF_FLUSH_HISTORY = 100
 SPEED_COURSE_MAX_AGE_S = 10.0  # VTG/RMC speed may enrich a position sentence without speed
-COMBINED_DOP_MAX_AGE_S = 10.0  # GN GSA DOP overrides per-constellation GSA DOP while it is fresh
+COMBINED_SOLUTION_MAX_AGE_S = 10.0  # a fresh GN (combined) solution overrides single-constellation ones
 SKY_MAX_AGE_S = 30.0  # a talker's GSV satellites-in-view count expires after this
 _GSA_DOP_FIELDS = ("pdop", "hdop", "vdop")
 
@@ -272,6 +272,7 @@ class DeviceWorker(threading.Thread):
     def _reset_sky(self) -> None:
         self._gsv_counts: dict[str, tuple[int, float]] = {}  # talker → (satellites in view, at)
         self._combined_dop_at = 0.0
+        self._combined_pos_at = 0.0
 
     def _reset_pending(self) -> None:
         self.pending_sentences: list[tuple] = []
@@ -409,6 +410,8 @@ class DeviceWorker(threading.Thread):
             self._queue_sentence(now, parsed, text)
 
         pos = parsed.position
+        if pos is not None and not self._take_position(parsed.talker, now):
+            pos = None
         if store and pos is not None and now - self._last_position_at >= settings["position_interval_s"]:
             self._last_position_at = now
             speed_kn, course_true = self._position_motion(pos, now)
@@ -448,7 +451,18 @@ class DeviceWorker(threading.Thread):
         if talker == "GN":
             self._combined_dop_at = now
             return True
-        return now - self._combined_dop_at > COMBINED_DOP_MAX_AGE_S
+        return now - self._combined_dop_at > COMBINED_SOLUTION_MAX_AGE_S
+
+    def _take_position(self, talker: str, now: float) -> bool:
+        """Return whether a position fix should be stored.
+
+        A GN (combined) fix takes priority over single-constellation fixes while
+        it is fresh, so alternating GP/GN sentences do not make the track jump.
+        """
+        if talker == "GN":
+            self._combined_pos_at = now
+            return True
+        return now - self._combined_pos_at > COMBINED_SOLUTION_MAX_AGE_S
 
     def _update_satellites_in_view(self, talker: str, count: str | None, now: float) -> None:
         """Store the satellites in view summed over all GSV talkers (GP, GL, GA, GB, ...)."""

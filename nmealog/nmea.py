@@ -20,6 +20,7 @@ _NAMED_FALLBACK_FIELDS: dict[str, tuple[str, ...]] = {
 _DIRECTION_FIELDS: dict[tuple[str, str], str] = {
     ("HDG", "deviation"): "dev_dir",
     ("HDG", "variation"): "var_dir",
+    ("RMC", "mag_variation"): "mag_var_dir",
 }
 
 # GNS mode characters that mean a usable fix (N = no fix, S = simulator).
@@ -119,7 +120,8 @@ def sentence_valid(sentence: str, fields: Mapping[str, str]) -> bool:
         mode = _flag(fields, "mode_indicator")
         return mode is None or any(ch in _FIX_MODES for ch in mode)
     if sentence == "GLL":
-        return _flag(fields, "status") in (None, "A") and _flag(fields, "faa_mode") != "N"
+        # Status must be V for any mode other than autonomous (A) or differential (D).
+        return _flag(fields, "status") in (None, "A") and _flag(fields, "faa_mode") in (None, "A", "D")
     if sentence == "RMC":
         mode = _flag(fields, "mode_indicator")
         return _flag(fields, "status") in (None, "A") and mode in (None, "A", "D")

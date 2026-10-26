@@ -7,7 +7,7 @@ import pytest
 
 from nmealog import settings
 from nmealog.collector import (
-    COMBINED_DOP_MAX_AGE_S,
+    COMBINED_SOLUTION_MAX_AGE_S,
     SKY_MAX_AGE_S,
     SPEED_COURSE_MAX_AGE_S,
     Collector,
@@ -187,7 +187,7 @@ def test_combined_gn_dop_takes_priority_over_constellation_dop(tmp_path):
 def test_constellation_dop_is_used_when_no_fresh_gn_dop(tmp_path):
     worker = _bare_worker(tmp_path)
     worker._handle_line(sentence("GNGSA,A,3,04,05,,09,12,,,24,,,,,2.5,1.3,2.1").encode())
-    worker._combined_dop_at -= COMBINED_DOP_MAX_AGE_S + 1
+    worker._combined_dop_at -= COMBINED_SOLUTION_MAX_AGE_S + 1
     worker._handle_line(sentence("GPGSA,A,3,04,05,,09,12,,,24,,,,,9.9,8.8,7.7").encode())
     assert worker.pending_latest[("GSA", "hdop")][0] == "8.8"
 
@@ -356,3 +356,20 @@ def test_worker_methods_do_not_shadow_thread_internals():
         own = {n for n in vars(cls) if n.startswith("_") and not n.startswith("__")}
         own |= {n for n in cls.__init__.__code__.co_names if n.startswith("_")}
         assert not (own & internals), f"{cls.__name__} shadows threading.Thread internals"
+
+
+def test_combined_gn_fix_takes_priority_over_single_constellation_fix(tmp_path):
+    worker = _bare_worker(tmp_path)
+    worker._handle_line(sentence("GNGNS,122310.00,3722.5581,N,12202.2199,W,ANNN,08,1.0,11.0,10.0,,").encode())
+    worker._last_position_at = 0.0
+    worker._handle_line(sentence("GPGGA,135123.00,5436.6107,N,00554.7198,W,2,12,0.8,31.5,M,53.7,M,,").encode())
+    assert [row[4] for row in worker.pending_positions] == ["GNS"]
+
+
+def test_single_constellation_fix_is_used_when_no_fresh_gn_fix(tmp_path):
+    worker = _bare_worker(tmp_path)
+    worker._handle_line(sentence("GNGNS,122310.00,3722.5581,N,12202.2199,W,ANNN,08,1.0,11.0,10.0,,").encode())
+    worker._combined_pos_at -= COMBINED_SOLUTION_MAX_AGE_S + 1
+    worker._last_position_at = 0.0
+    worker._handle_line(sentence("GPGGA,135123.00,5436.6107,N,00554.7198,W,2,12,0.8,31.5,M,53.7,M,,").encode())
+    assert [row[4] for row in worker.pending_positions] == ["GNS", "GGA"]

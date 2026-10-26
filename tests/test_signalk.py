@@ -7,6 +7,8 @@ import pytest
 
 from nmealog.signalk import SIGNALK_VERSION, build_vessel, field_to_signalk
 
+NOW = 1000.0
+
 
 def _row(device_id: int, sentence: str, field: str, value: str, ts: float):
     return {
@@ -38,7 +40,7 @@ def test_gns_maps_gnss_fields_and_position():
     ]
     position = {"latitude": 37.375968, "longitude": -122.036998, "received_at": now}
 
-    nav = build_vessel(1, "gps", latest, position)
+    nav = build_vessel(1, "gps", latest, position, now=NOW)
 
     assert nav["position"]["value"]["latitude"] == pytest.approx(37.375968)
     assert nav["position"]["value"]["longitude"] == pytest.approx(-122.036998)
@@ -48,7 +50,7 @@ def test_gns_maps_gnss_fields_and_position():
 
 
 def test_gns_no_fix_mode_reports_no_gps_quality():
-    nav = build_vessel(1, "gps", [_row(1, "GNS", "mode_indicator", "NNNN", 1000.0)], None)
+    nav = build_vessel(1, "gps", [_row(1, "GNS", "mode_indicator", "NNNN", 1000.0)], None, now=NOW)
     assert nav["gnss"]["methodQuality"]["value"] == "no GPS"
 
 
@@ -59,7 +61,7 @@ def test_gns_no_fix_does_not_publish_its_position():
         _row(1, "GNS", "lon", "12202.2199", now),
         _row(1, "GNS", "mode_indicator", "NNNN", now),
     ]
-    nav = build_vessel(1, "gps", latest, None)
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
     assert "position" not in nav
 
 
@@ -71,7 +73,7 @@ def test_raw_nmea_coordinates_are_not_published_as_degrees():
         _row(1, "GGA", "altitude", "28.2", now),
         _row(1, "GGA", "gps_qual", "2", now),
     ]
-    nav = build_vessel(1, "gps", latest, None)
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
     assert "position" not in nav
     assert nav["gnss"]["antennaAltitude"]["value"] == pytest.approx(28.2)
 
@@ -87,7 +89,7 @@ def test_raw_nmea_coordinates_are_not_published_as_degrees():
     ("42", "Error"),
 ])
 def test_gga_quality_codes_map_to_signal_k_enum(quality, expected):
-    nav = build_vessel(1, "gps", [_row(1, "GGA", "gps_qual", quality, 1000.0)], None)
+    nav = build_vessel(1, "gps", [_row(1, "GGA", "gps_qual", quality, 1000.0)], None, now=NOW)
     assert nav["gnss"]["methodQuality"]["value"] == expected
 
 
@@ -100,7 +102,7 @@ def test_newest_speed_wins_between_rmc_and_vtg():
         _row(1, "RMC", "true_course", "90.0", now - 5),
     ]
 
-    nav = build_vessel(1, "gps", latest, None)
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
 
     assert nav["speedOverGround"]["value"] == pytest.approx(5.0 * 0.514444)
     assert nav["courseOverGroundTrue"]["value"] == pytest.approx(_rad(80.0))
@@ -114,7 +116,7 @@ def test_rmc_with_void_status_publishes_nothing():
         _row(1, "RMC", "spd_over_grnd", "8.5", now),
         _row(1, "RMC", "true_course", "90.0", now),
     ]
-    nav = build_vessel(1, "gps", latest, None)
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
     assert "speedOverGround" not in nav
     assert "courseOverGroundTrue" not in nav
 
@@ -126,7 +128,7 @@ def test_rmc_with_non_fix_mode_publishes_nothing():
         _row(1, "RMC", "mode_indicator", "E", now),
         _row(1, "RMC", "spd_over_grnd", "8.5", now),
     ]
-    nav = build_vessel(1, "gps", latest, None)
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
     assert "speedOverGround" not in nav
 
 
@@ -136,13 +138,13 @@ def test_vtg_with_no_fix_publishes_nothing():
         _row(1, "VTG", "faa_mode", "N", now),
         _row(1, "VTG", "true_track", "80.0", now),
     ]
-    nav = build_vessel(1, "gps", latest, None)
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
     assert "courseOverGroundTrue" not in nav
 
 
 def test_rot_with_void_status_publishes_nothing():
     latest = [_row(1, "ROT", "rate_of_turn", "-12.0", 1000.0), _row(1, "ROT", "status", "V", 1000.0)]
-    nav = build_vessel(1, "gps", latest, None)
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
     assert "rateOfTurn" not in nav
 
 
@@ -155,7 +157,7 @@ def test_ths_and_hdm_map_true_and_magnetic_heading_in_radians():
         _row(1, "HDM", "heading", "179.0", now),
     ]
 
-    nav = build_vessel(1, "gps", latest, None)
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
 
     assert nav["headingTrue"]["value"] == pytest.approx(_rad(181.0))
     assert nav["headingTrue"]["units"] == "rad"
@@ -169,7 +171,7 @@ def test_ths_with_invalid_status_is_not_published():
         _row(1, "THS", "heading", "181.0", now),
         _row(1, "THS", "mode_indicator", "V", now),
     ]
-    nav = build_vessel(1, "gps", latest, None)
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
     assert nav["headingTrue"]["value"] == pytest.approx(_rad(180.0))
 
 
@@ -180,7 +182,7 @@ def test_hdg_variation_and_deviation_use_spec_paths_and_sign():
         _row(1, "HDG", "deviation", "-3.0", now),
         _row(1, "HDG", "variation", "-12.5", now),
     ]
-    nav = build_vessel(1, "gps", latest, None)
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
     assert nav["magneticVariation"]["value"] == pytest.approx(_rad(-12.5))
     assert nav["magneticVariation"]["units"] == "rad"
     assert nav["magneticDeviation"]["value"] == pytest.approx(_rad(-3.0))
@@ -203,7 +205,7 @@ def test_gnss_dilution_depth_and_weather():
         _row(1, "MDA", "wind_speed_meters", "5.0", now),
     ]
 
-    nav = build_vessel(1, "gps", latest, None)
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
 
     assert nav["gnss"]["horizontalDilution"]["value"] == pytest.approx(1.1)
     assert nav["gnss"]["positionDilution"]["value"] == pytest.approx(1.8)
@@ -229,7 +231,7 @@ def test_mwv_apparent_wind_uses_reference_units_and_signed_angle():
         _row(1, "MWV", "status", "A", now),
     ]
 
-    nav = build_vessel(1, "gps", latest, None)
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
 
     assert nav["environment"]["wind"]["angleApparent"]["value"] == pytest.approx(_rad(45.0))
     assert nav["environment"]["wind"]["angleApparent"]["units"] == "rad"
@@ -251,7 +253,7 @@ def test_mwv_angle_is_signed_negative_to_port(raw, expected_degrees):
         _row(1, "MWV", "wind_speed_units", "M", 1000.0),
         _row(1, "MWV", "status", "A", 1000.0),
     ]
-    nav = build_vessel(1, "gps", latest, None)
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
     assert nav["environment"]["wind"]["angleApparent"]["value"] == pytest.approx(_rad(expected_degrees))
 
 
@@ -263,7 +265,7 @@ def test_mwv_speed_in_statute_mph_is_converted():
         _row(1, "MWV", "wind_speed_units", "S", 1000.0),
         _row(1, "MWV", "status", "A", 1000.0),
     ]
-    nav = build_vessel(1, "gps", latest, None)
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
     assert nav["environment"]["wind"]["speedTrue"]["value"] == pytest.approx(10.0 * 0.44704)
 
 
@@ -277,7 +279,7 @@ def test_mwv_true_wind_uses_true_paths():
         _row(1, "MWV", "status", "A", now),
     ]
 
-    nav = build_vessel(1, "gps", latest, None)
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
 
     assert nav["environment"]["wind"]["angleTrueWater"]["value"] == pytest.approx(_rad(90.0))
     assert nav["environment"]["wind"]["speedTrue"]["value"] == pytest.approx(5.0)
@@ -293,7 +295,7 @@ def test_mwv_void_status_is_ignored():
         _row(1, "MWV", "status", "V", now),
     ]
 
-    nav = build_vessel(1, "gps", latest, None)
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
 
     assert "environment" not in nav
 
@@ -305,3 +307,83 @@ def test_field_lookup_includes_new_sentences():
     assert field_to_signalk("HDM", "heading")["ctx"] == "headingMagnetic"
     assert field_to_signalk("DBT", "depth_meters")["ctx"] == "environment.depth.belowTransducer"
     assert field_to_signalk("GSV", "num_sv_in_view") is None
+
+
+def test_hdg_heading_is_compass_and_magnetic_and_true_are_derived():
+    latest = [
+        _row(1, "HDG", "heading", "101.1", NOW),
+        _row(1, "HDG", "deviation", "-3.0", NOW),
+        _row(1, "HDG", "variation", "-12.5", NOW),
+    ]
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
+    assert nav["headingCompass"]["value"] == pytest.approx(_rad(101.1))
+    assert nav["headingMagnetic"]["value"] == pytest.approx(_rad(98.1))
+    assert nav["headingTrue"]["value"] == pytest.approx(_rad(85.6))
+    assert nav["headingMagnetic"]["description"] == "Heading (Magnetic)"
+    assert nav["headingMagnetic"]["units"] == "rad"
+
+
+def test_hdg_without_deviation_publishes_only_the_compass_heading():
+    latest = [_row(1, "HDG", "heading", "101.1", NOW), _row(1, "HDG", "variation", "-12.5", NOW)]
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
+    assert nav["headingCompass"]["value"] == pytest.approx(_rad(101.1))
+    assert "headingMagnetic" not in nav
+    assert "headingTrue" not in nav
+
+
+def test_derived_heading_wraps_into_one_turn():
+    latest = [_row(1, "HDG", "heading", "359.0", NOW), _row(1, "HDG", "deviation", "5.0", NOW)]
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
+    assert nav["headingMagnetic"]["value"] == pytest.approx(_rad(4.0))
+
+
+def test_newer_hdt_overrides_derived_true_heading():
+    latest = [
+        _row(1, "HDG", "heading", "101.1", NOW - 10),
+        _row(1, "HDG", "deviation", "0.0", NOW - 10),
+        _row(1, "HDG", "variation", "0.0", NOW - 10),
+        _row(1, "HDT", "heading", "200.0", NOW),
+    ]
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
+    assert nav["headingTrue"]["value"] == pytest.approx(_rad(200.0))
+
+
+def test_values_older_than_their_timeout_are_not_published():
+    latest = [
+        _row(1, "HDT", "heading", "180.0", NOW - 31),
+        _row(1, "DBT", "depth_meters", "3.8", NOW - 31),
+        _row(1, "MDA", "air_temp", "15.0", NOW - 31),
+    ]
+    nav = build_vessel(1, "gps", latest, None, now=NOW)
+    assert "headingTrue" not in nav
+    assert "depth" not in nav
+    # Slow-changing environment values keep a longer limit.
+    assert nav["environment"]["outside"]["temperature"]["meta"]["timeout"] == 300.0
+
+
+def test_fresh_values_carry_their_timeout_in_meta():
+    nav = build_vessel(1, "gps", [_row(1, "HDT", "heading", "180.0", NOW)], None, now=NOW)
+    assert nav["headingTrue"]["meta"] == {"timeout": 30.0}
+
+
+def test_stale_position_is_not_published():
+    position = {"latitude": 54.6, "longitude": -5.9, "received_at": NOW - 61}
+    nav = build_vessel(1, "gps", [], position, now=NOW)
+    assert "position" not in nav
+
+
+def test_rmc_magnetic_variation_is_signed_and_published():
+    nav = build_vessel(1, "gps", [_row(1, "RMC", "mag_variation", "-3.1", NOW)], None, now=NOW)
+    assert nav["magneticVariation"]["value"] == pytest.approx(_rad(-3.1))
+    assert nav["magneticVariation"]["units"] == "rad"
+
+
+def test_geoidal_separation_is_passed_through_with_its_sign():
+    nav = build_vessel(1, "gps", [_row(1, "GGA", "geo_sep", "-3.5", NOW)], None, now=NOW)
+    assert nav["gnss"]["geoidalSeparation"]["value"] == pytest.approx(-3.5)
+    assert nav["gnss"]["geoidalSeparation"]["units"] == "m"
+
+
+def test_gga_pps_mode_is_reported_as_gnss_fix():
+    nav = build_vessel(1, "gps", [_row(1, "GGA", "gps_qual", "3", NOW)], None, now=NOW)
+    assert nav["gnss"]["methodQuality"]["value"] == "GNSS Fix"
