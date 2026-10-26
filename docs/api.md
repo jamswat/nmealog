@@ -126,6 +126,7 @@ as the internal `/api/positions` used by the map).
 | `since` | float | Unix epoch, inclusive lower bound |
 | `until` | float | Unix epoch, inclusive upper bound |
 | `limit` | int | Max rows (default 20000, max 20000) |
+| `max_points` | int | Thin the result to about this many points, evenly over the time range. The newest fix in each time slice is kept, per device. Range 1–20000; omit for every row. |
 | `format` | str | `"geojson"` to force GeoJSON output |
 
 ### Example (GeoJSON)
